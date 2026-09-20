@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# claudespace-msg <role> "<text>"
+# Fire-and-forget: types text into another role's pane and returns
+# immediately. Never waits for or returns a reply, and never advances the
+# pipeline (that's the Stop hook's job, driven by <role>.done/.blocked
+# marker files) - see prompts/*.prompt.md's "Ad hoc messaging".
+set -euo pipefail
+
+role="${1:?usage: claudespace-msg <role> <text>}"
+shift
+text="$*"
+
+[ -n "${CLAUDESPACE_MARKER_DIR:-}" ] || {
+  echo "claudespace-msg: CLAUDESPACE_MARKER_DIR is not set" >&2
+  exit 1
+}
+
+panes_file="$CLAUDESPACE_MARKER_DIR/panes.map"
+[ -f "$panes_file" ] || {
+  echo "claudespace-msg: no panes.map found in $CLAUDESPACE_MARKER_DIR" >&2
+  exit 1
+}
+
+pane_id="$(awk -F'\t' -v r="$role" '$1==r{print $2}' "$panes_file")"
+[ -n "$pane_id" ] || {
+  echo "claudespace-msg: unknown role '$role'" >&2
+  exit 1
+}
+
+tmux send-keys -t "$pane_id" -l -- "$text"
+tmux send-keys -t "$pane_id" Enter

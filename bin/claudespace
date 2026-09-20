@@ -1,0 +1,464 @@
+#!/usr/bin/env bash
+# Launches/manages tmux windows with one pane per pipeline role
+# (conductor, researcher, planner, principal, implementer, reviewer),
+# each running `claude` with that role's persona from prompts/
+# loaded as its system prompt for the life of the pane.
+#
+# A directory can hold multiple concurrent runs ("instances"), each its own
+# tmux window/session and its own marker dir under
+# $dir/.claudespace/s/<instance-uuid>/. Once a run's conductor persists a
+# backlog, that same instance dir also gets a `slug` file (the backlog's own
+# <slug>) so `claudespace status/attach/resume/stop` can address it by name
+# instead of by uuid.
+#
+# Run from inside an existing tmux client: adds a new window to the current
+# session and switches to it. Run from outside tmux: creates a dedicated
+# session and attaches. Never nests a session inside another.
+#
+# Handoffs between panes are driven by hooks/claudespace-dispatch.sh
+# (a global Stop hook) reading marker files each role writes on completion.
+# That hook and claudespace-msg key everything off $CLAUDESPACE_MARKER_DIR,
+# never off tmux session/window names, so they need no per-instance handling.
+#
+# Per-role model/effort come from claudespace.conf (see resolve_setting).
+set -euo pipefail
+
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
+
+ROLES=(conductor researcher planner principal implementer reviewer)
+PROMPT_DIR="${CLAUDESPACE_PROMPT_DIR:-$ROOT_DIR/prompts}"
+GLOBAL_CONF="${CLAUDESPACE_CONF:-$ROOT_DIR/claudespace.conf}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  claudespace start [--think] [DIR]        Start a new instance for DIR (default: cwd)
+  claudespace status [DIR]                 List every instance for DIR, running or stopped
+  claudespace attach [REF] [DIR]           Switch into a running instance (REF: slug or uuid)
+  claudespace resume [REF] [DIR]           Reconnect a stopped instance's panes to their saved sessions
+  claudespace stop [REF] [DIR]             Kill a running instance
+  claudespace config [DIR]                 Show each role's resolved model/effort for DIR
+
+REF is optional when DIR has exactly one instance. See claudespace.conf (next to
+this script's parent dir, or $CLAUDESPACE_CONF) for per-role model/effort
+configuration (project override: DIR/.claudespace/config).
+EOF
+}
+
+name_for() {
+  local dir="$1" uuid="$2" base
+  # basename first, as its own command substitution (strips the trailing
+  # newline) - piping it straight into tr would instead convert that
+  # newline into a literal trailing dash before substitution can strip it.
+  base="$(basename "$dir")"
+  base="$(printf '%s' "$base" | tr -c 'a-zA-Z0-9_-' '-')"
+  echo "claudespace-${base}-${uuid}"
+}
+
+# Prints "session:<name>" or "window:<window_id>" for a live tmux target
+# matching $1, or nothing if none exists.
+find_target() {
+  local name="$1"
+  if tmux has-session -t "$name" 2>/dev/null; then
+    echo "session:$name"
+    return 0
+  fi
+  local hit
+  hit="$(tmux list-windows -a -F '#{window_id}	#{window_name}' 2>/dev/null | awk -F'\t' -v n="$name" '$2==n{print $1; exit}'; true)"
+  if [ -n "$hit" ]; then
+    echo "window:$hit"
+  fi
+  return 0
+}
+
+attach_to_target() {
+  local target="$1"
+  case "$target" in
+  session:*)
+    if [ -n "${TMUX:-}" ]; then
+      tmux switch-client -t "${target#session:}"
+    else
+      exec tmux attach -t "${target#session:}"
+    fi
+    ;;
+  window:*)
+    if [ -n "${TMUX:-}" ]; then
+      tmux switch-client -t "${target#window:}"
+    else
+      exec tmux attach -t "${target#window:}"
+    fi
+    ;;
+  esac
+}
+
+# Resolves REF (a slug from an instance's `slug` file, a bare instance uuid,
+# or empty) against $dir/.claudespace/s/* and prints the matching uuid.
+resolve_instance() {
+  local dir="$1" ref="$2"
+  local base="$dir/.claudespace/s"
+  [ -d "$base" ] || { echo "claudespace: no instances found for $dir" >&2; return 1; }
+
+  if [ -n "$ref" ] && [ -d "$base/$ref" ]; then
+    echo "$ref"
+    return 0
+  fi
+
+  local matches=() d uuid
+  for d in "$base"/*/; do
+    [ -d "$d" ] || continue
+    uuid="$(basename "$d")"
+    if [ -n "$ref" ]; then
+      [ -f "$d/slug" ] && [ "$(cat "$d/slug")" = "$ref" ] && matches+=("$uuid")
+    else
+      matches+=("$uuid")
+    fi
+  done
+
+  case "${#matches[@]}" in
+  0)
+    echo "claudespace: no instance matching '${ref:-<any>}' in $dir - see 'claudespace status $dir'" >&2
+    return 1
+    ;;
+  1)
+    echo "${matches[0]}"
+    return 0
+    ;;
+  *)
+    echo "claudespace: '$ref' is ambiguous ($dir), matches: ${matches[*]} - specify the instance uuid directly" >&2
+    return 1
+    ;;
+  esac
+}
+
+# Splits "$@" into a REF (anything that isn't an existing directory) and a
+# DIR (anything that is), defaulting DIR to cwd. Sets globals REF and DIR.
+parse_ref_dir_args() {
+  DIR="."
+  REF=""
+  local arg
+  for arg in "$@"; do
+    if [ -d "$arg" ]; then
+      DIR="$arg"
+    else
+      REF="$arg"
+    fi
+  done
+  DIR="$(cd "$DIR" && pwd)"
+}
+
+# config_get <file> <key> -> last matching "key = value" line's value, if any.
+config_get() {
+  local file="$1" key="$2"
+  [ -f "$file" ] || return 0
+  grep -E "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null \
+    | tail -n1 \
+    | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+# resolve_setting <dir> <role> <model|effort> -> resolved value.
+# Precedence: DIR/.claudespace/config[role] > DIR/.claudespace/config[default]
+#          > $GLOBAL_CONF[role] > $GLOBAL_CONF[default]
+#          > built-in fallback (sonnet / high).
+resolve_setting() {
+  local dir="$1" role="$2" key="$3" val
+  local project_conf="$dir/.claudespace/config"
+
+  val="$(config_get "$project_conf" "${role}.${key}")"; [ -n "$val" ] && { echo "$val"; return; }
+  val="$(config_get "$project_conf" "default.${key}")"; [ -n "$val" ] && { echo "$val"; return; }
+  val="$(config_get "$GLOBAL_CONF" "${role}.${key}")"; [ -n "$val" ] && { echo "$val"; return; }
+  val="$(config_get "$GLOBAL_CONF" "default.${key}")"; [ -n "$val" ] && { echo "$val"; return; }
+
+  case "$key" in
+  model) echo "sonnet" ;;
+  effort) echo "high" ;;
+  esac
+}
+
+# resolve_layout <dir> -> tmux layout name for the pipeline window.
+# Not per-role (it's a window-level tmux setting). Precedence:
+# DIR/.claudespace/config[layout] > $GLOBAL_CONF[layout] > "tiled".
+# One of tmux's built-in layouts: tiled (equal grid, the default),
+# main-vertical (conductor large on the left, rest in a narrow column),
+# main-horizontal (conductor large on top, rest in a short row).
+resolve_layout() {
+  local dir="$1" val
+  val="$(config_get "$dir/.claudespace/config" "layout")"; [ -n "$val" ] && { echo "$val"; return; }
+  val="$(config_get "$GLOBAL_CONF" "layout")"; [ -n "$val" ] && { echo "$val"; return; }
+  echo "tiled"
+}
+
+# Creates a tmux window/session named $2 in $1, spawns one pane per role,
+# writes $3/panes.map, and launches `claude` in each pane.
+# $4 is "start" (mint a fresh --session-id per role into sessions.map) or
+# "resume" (read sessions.map and --resume each one). Prints the window id.
+spawn_pipeline_panes() {
+  local dir="$1" name="$2" marker_dir="$3" mode="$4"
+  local sessions_file="$marker_dir/sessions.map"
+  local panes_file="$marker_dir/panes.map"
+  : >"$panes_file"
+  [ "$mode" = "start" ] && : >"$sessions_file"
+
+  local win_id
+  if [ -n "${TMUX:-}" ]; then
+    # Already in tmux: add a window to the current session, never nest.
+    win_id="$(tmux new-window -n "$name" -c "$dir" -P -F '#{window_id}')"
+  else
+    tmux new-session -d -s "$name" -c "$dir" -n "$name"
+    win_id="$(tmux display-message -p -t "$name" '#{window_id}')"
+  fi
+  # Without this, automatic-rename (on by default) keeps renaming this window
+  # back to whatever its active pane's process looks like - which for a
+  # claude pane collapses to the generic "claude", indistinguishable from
+  # every other Claude Code window (see also automatic-rename-format in
+  # ~/.tmux.conf, which fixes the version-number case but not this one).
+  tmux set-option -w -t "$win_id" automatic-rename off
+
+  local first=1 pane_id conductor_pane_id="" role session_id session_flag model effort launch_cmd
+  for role in "${ROLES[@]}"; do
+    if [ "$first" = 1 ]; then
+      pane_id="$(tmux list-panes -t "$win_id" -F '#{pane_id}' | head -1)"
+      first=0
+    else
+      pane_id="$(tmux split-window -t "$win_id" -c "$dir" -P -F '#{pane_id}')"
+      tmux select-layout -t "$win_id" tiled >/dev/null
+    fi
+    [ "$role" = "conductor" ] && conductor_pane_id="$pane_id"
+    printf '%s\t%s\n' "$role" "$pane_id" >>"$panes_file"
+    # Claude Code overwrites pane_title itself once it starts (its own OSC
+    # title sequence), so a plain `select-pane -T` label gets clobbered - use
+    # a pane-scoped user option instead, which Claude Code never touches.
+    tmux set-option -p -t "$pane_id" @role "$role"
+
+    if [ "$mode" = "start" ]; then
+      session_id="$(uuidgen | tr 'A-Z' 'a-z')"
+      printf '%s\t%s\n' "$role" "$session_id" >>"$sessions_file"
+      session_flag="--session-id $session_id"
+    else
+      session_id="$(awk -F'\t' -v r="$role" '$1==r{print $2}' "$sessions_file")"
+      [ -n "$session_id" ] || {
+        echo "claudespace: no recorded session id for '$role' in $sessions_file - this instance predates session tracking and can't be auto-resumed" >&2
+        exit 1
+      }
+      session_flag="--resume $session_id"
+    fi
+
+    model="$(resolve_setting "$dir" "$role" model)"
+    effort="$(resolve_setting "$dir" "$role" effort)"
+
+    launch_cmd="$(printf 'export CLAUDESPACE_ROOT=%q CLAUDESPACE_MARKER_DIR=%q CLAUDESPACE_ROLE=%q PATH=%q:"$PATH"; exec claude %s --model %q --effort %q --append-system-prompt "$(cat %q)"' \
+      "$dir" "$marker_dir" "$role" "$BIN_DIR" "$session_flag" "$model" "$effort" "$PROMPT_DIR/$role.prompt.md")"
+    tmux send-keys -t "$pane_id" "$launch_cmd" Enter
+  done
+
+  tmux set-option -w -t "$win_id" pane-border-status top
+  tmux set-option -w -t "$win_id" pane-border-format '#[bold]#{@role}#[default] #{pane_title}'
+
+  local layout
+  layout="$(resolve_layout "$dir")"
+  case "$layout" in
+  main-vertical) tmux set-option -w -t "$win_id" main-pane-width 65% ;;
+  main-horizontal) tmux set-option -w -t "$win_id" main-pane-height 65% ;;
+  esac
+  tmux select-layout -t "$win_id" "$layout" >/dev/null
+  [ -n "$conductor_pane_id" ] && tmux select-pane -t "$conductor_pane_id"
+
+  echo "$win_id"
+}
+
+cmd_start() {
+  local think=0
+  local dir="."
+  for arg in "$@"; do
+    case "$arg" in
+    --think) think=1 ;;
+    *) dir="$arg" ;;
+    esac
+  done
+  dir="$(cd "$dir" && pwd)"
+
+  for role in "${ROLES[@]}"; do
+    [ -f "$PROMPT_DIR/$role.prompt.md" ] || {
+      echo "claudespace: missing $PROMPT_DIR/$role.prompt.md" >&2
+      exit 1
+    }
+  done
+
+  if git -C "$dir" rev-parse --show-toplevel >/dev/null 2>&1; then
+    local repo_root gitignore
+    repo_root="$(git -C "$dir" rev-parse --show-toplevel)"
+    gitignore="$repo_root/.gitignore"
+    if ! grep -qx '\.claudespace/' "$gitignore" 2>/dev/null; then
+      # Append on its own line even if the file exists without a trailing newline.
+      [ -s "$gitignore" ] && [ -n "$(tail -c1 "$gitignore")" ] && echo >>"$gitignore"
+      echo '.claudespace/' >>"$gitignore"
+      echo "claudespace: added .claudespace/ to $gitignore"
+    fi
+  fi
+
+  local instance
+  instance="$(uuidgen | tr 'A-Z' 'a-z' | cut -c1-8)"
+  local marker_dir="$dir/.claudespace/s/$instance"
+  mkdir -p "$marker_dir/reports"
+  if [ "$think" = 1 ]; then
+    touch "$marker_dir/think"
+  fi
+
+  local name
+  name="$(name_for "$dir" "$instance")"
+
+  local win_id
+  win_id="$(spawn_pipeline_panes "$dir" "$name" "$marker_dir" start)"
+
+  echo "claudespace: started '$name' ($instance) for $dir"
+  echo "  marker dir: $marker_dir"
+  echo "  give the conductor pane your goal to kick off a run."
+
+  if [ -n "${TMUX:-}" ]; then
+    tmux switch-client -t "$win_id"
+  else
+    exec tmux attach -t "$name"
+  fi
+}
+
+cmd_attach() {
+  parse_ref_dir_args "$@"
+  local instance
+  instance="$(resolve_instance "$DIR" "$REF")" || exit 1
+
+  local name target
+  name="$(name_for "$DIR" "$instance")"
+  target="$(find_target "$name")"
+  if [ -z "$target" ]; then
+    echo "claudespace: instance '$instance' isn't running - try 'claudespace resume ${REF:-$instance} $DIR'" >&2
+    exit 1
+  fi
+  attach_to_target "$target"
+}
+
+cmd_resume() {
+  parse_ref_dir_args "$@"
+  local instance
+  instance="$(resolve_instance "$DIR" "$REF")" || exit 1
+
+  local name target
+  name="$(name_for "$DIR" "$instance")"
+  target="$(find_target "$name")"
+  if [ -n "$target" ]; then
+    echo "claudespace: instance '$instance' is already running - attaching instead of resuming"
+    attach_to_target "$target"
+    return $?
+  fi
+
+  local marker_dir="$DIR/.claudespace/s/$instance"
+  [ -f "$marker_dir/sessions.map" ] || {
+    echo "claudespace: $marker_dir has no sessions.map - this instance predates session tracking and can't be auto-resumed" >&2
+    exit 1
+  }
+
+  local win_id
+  win_id="$(spawn_pipeline_panes "$DIR" "$name" "$marker_dir" resume)"
+  echo "claudespace: resumed '$name' ($instance) for $DIR"
+
+  if [ -n "${TMUX:-}" ]; then
+    tmux switch-client -t "$win_id"
+  else
+    exec tmux attach -t "$name"
+  fi
+}
+
+cmd_stop() {
+  parse_ref_dir_args "$@"
+  local instance
+  instance="$(resolve_instance "$DIR" "$REF")" || exit 1
+
+  local name target
+  name="$(name_for "$DIR" "$instance")"
+  target="$(find_target "$name")"
+  case "$target" in
+  session:*)
+    tmux kill-session -t "${target#session:}" && echo "claudespace: stopped '$name' ($instance)"
+    ;;
+  window:*)
+    tmux kill-window -t "${target#window:}" && echo "claudespace: stopped '$name' ($instance)"
+    ;;
+  *)
+    echo "claudespace: instance '$instance' isn't running"
+    ;;
+  esac
+}
+
+cmd_status() {
+  local dir="${1:-.}"
+  dir="$(cd "$dir" && pwd)"
+
+  local base="$dir/.claudespace/s"
+  if [ ! -d "$base" ]; then
+    echo "claudespace: no instances for $dir"
+  else
+    local d uuid slug name target
+    for d in "$base"/*/; do
+      [ -d "$d" ] || continue
+      uuid="$(basename "$d")"
+      slug="(no goal yet)"
+      [ -f "$d/slug" ] && slug="$(cat "$d/slug")"
+      name="$(name_for "$dir" "$uuid")"
+      target="$(find_target "$name")"
+      if [ -n "$target" ]; then
+        echo "instance $uuid - $slug - running"
+        tmux list-panes -t "${target#*:}" -F '  #{pane_title}: #{pane_id} (#{pane_current_command})'
+      else
+        echo "instance $uuid - $slug - stopped"
+      fi
+    done
+  fi
+
+  shopt -s nullglob
+  for backlog in "$dir"/docs/backlog-*.md; do
+    echo "backlog: $backlog"
+    grep -E '^- status:' "$backlog" | sort | uniq -c
+  done
+}
+
+cmd_config() {
+  local dir="${1:-.}"
+  dir="$(cd "$dir" && pwd)"
+  local role
+  for role in "${ROLES[@]}"; do
+    printf '%-11s model=%-10s effort=%s\n' "$role" \
+      "$(resolve_setting "$dir" "$role" model)" \
+      "$(resolve_setting "$dir" "$role" effort)"
+  done
+  printf 'layout=%s\n' "$(resolve_layout "$dir")"
+}
+
+case "${1:-}" in
+start)
+  shift
+  cmd_start "$@"
+  ;;
+attach)
+  shift
+  cmd_attach "$@"
+  ;;
+resume)
+  shift
+  cmd_resume "$@"
+  ;;
+stop)
+  shift
+  cmd_stop "$@"
+  ;;
+status)
+  shift
+  cmd_status "$@"
+  ;;
+config)
+  shift
+  cmd_config "$@"
+  ;;
+*)
+  usage
+  exit 1
+  ;;
+esac
