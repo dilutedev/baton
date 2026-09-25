@@ -2,8 +2,8 @@
 # claudespace-msg <role> "<text>"
 # Fire-and-forget: types text into another role's pane and returns
 # immediately. Never waits for or returns a reply, and never advances the
-# pipeline (that's the Stop hook's job, driven by <role>.done/.blocked
-# marker files) - see prompts/*.prompt.md's "Ad hoc messaging".
+# pipeline (that's the Stop hook's job, driven by claudespace-handoff calls -
+# see that script and prompts/*.prompt.md's "Ad hoc messaging").
 set -euo pipefail
 
 role="${1:?usage: claudespace-msg <role> <text>}"

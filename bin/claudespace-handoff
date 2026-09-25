@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# claudespace-handoff --status done|blocked [--route ROLE] "<payload>"
+# Signals that this role finished (or bounced) a turn of work, for
+# hooks/claudespace-dispatch.sh to pick up and route to the next pane.
+#
+# If a conductor-dispatched backlog item is in flight ($CLAUDESPACE_MARKER_DIR
+# /conductor-run exists), the signal is a kata comment on that item - a
+# `status: <status>` line, an optional `route: <role>` line, then the
+# payload. Otherwise (a manually-driven chain with no conductor - see
+# prompts/*.prompt.md's "Which backlog?"/routing notes) it falls back to the
+# original local marker file, $CLAUDESPACE_MARKER_DIR/<role>.<status>.
+#
+# This is a real pipeline handoff, not the fire-and-forget claudespace-msg -
+# see that script and each prompt's Ad hoc messaging section.
+set -euo pipefail
+
+status=""
+route=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+  --status)
+    status="${2:?--status needs an argument}"
+    shift 2
+    ;;
+  --route)
+    route="${2:?--route needs an argument}"
+    shift 2
+    ;;
+  --)
+    shift
+    break
+    ;;
+  *)
+    break
+    ;;
+  esac
+done
+
+case "$status" in
+done | blocked) : ;;
+*)
+  echo "claudespace-handoff: usage: claudespace-handoff --status done|blocked [--route ROLE] <payload>" >&2
+  exit 1
+  ;;
+esac
+
+payload="$*"
+[ -n "$payload" ] || {
+  echo "claudespace-handoff: usage: claudespace-handoff --status done|blocked [--route ROLE] <payload>" >&2
+  exit 1
+}
+
+[ -n "${CLAUDESPACE_MARKER_DIR:-}" ] || {
+  echo "claudespace-handoff: CLAUDESPACE_MARKER_DIR is not set" >&2
+  exit 1
+}
+[ -n "${CLAUDESPACE_ROLE:-}" ] || {
+  echo "claudespace-handoff: CLAUDESPACE_ROLE is not set" >&2
+  exit 1
+}
+
+body_tail="$payload"
+[ -n "$route" ] && body_tail="route: $route
+$payload"
+
+conductor_run="$CLAUDESPACE_MARKER_DIR/conductor-run"
+if [ -f "$conductor_run" ] && command -v kata >/dev/null 2>&1; then
+  item_ref="$(sed -n '2p' "$conductor_run")"
+  if [ -n "$item_ref" ]; then
+    kata comment "$item_ref" --teammate "$CLAUDESPACE_ROLE" \
+      --body "status: $status
+$body_tail" \
+      --workspace "${CLAUDESPACE_ROOT:-.}" --agent
+    exit 0
+  fi
+fi
+
+mkdir -p "$CLAUDESPACE_MARKER_DIR"
+printf '%s\n' "$body_tail" >"$CLAUDESPACE_MARKER_DIR/$CLAUDESPACE_ROLE.$status"

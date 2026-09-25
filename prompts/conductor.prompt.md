@@ -162,8 +162,8 @@ Resolve the active goal issue per "Which backlog?" above, then:
 
 - No goal issue exists yet for this goal (new goal): this is the first invocation for this goal. Go to step 2.
 - The goal issue exists and this run has no `$CLAUDESPACE_MARKER_DIR/conductor-run` marker yet: the user has reviewed/edited the backlog and is resuming after the checkpoint. Go to step 4.
-- The goal issue exists, `$CLAUDESPACE_MARKER_DIR/conductor-run` exists, and `reviewer.done` names this turn's payload path with `route: conductor`: reviewer passed the item this run most recently dispatched. Go to step 5.
-- The goal issue exists, `$CLAUDESPACE_MARKER_DIR/conductor-run` exists, and this turn's payload path is instead named by some other role's `<role>.done` with `route: conductor`: that role bounced because it lacks enough context to proceed on the item this run most recently dispatched (the same generic "Handing off work that isn't yours" redirect every role's prompt already documents, aimed at you instead of a pipeline stage). Go to step 6.
+- The goal issue exists, `$CLAUDESPACE_MARKER_DIR/conductor-run` exists, and this turn's input came from reviewer's `claudespace-handoff --status done --route conductor` call: reviewer passed the item this run most recently dispatched. Go to step 5.
+- The goal issue exists, `$CLAUDESPACE_MARKER_DIR/conductor-run` exists, and this turn's input instead came from some other role's `claudespace-handoff --status ... --route conductor` call: that role bounced because it lacks enough context to proceed on the item this run most recently dispatched (the same generic "Handing off work that isn't yours" redirect every role's prompt already documents, aimed at you instead of a pipeline stage). Go to step 6.
 
 ---
 
@@ -192,7 +192,7 @@ Run `kata next --unowned --label backlog-<slug> --no-label claudespace-backlog -
 
 ## 5. Handle a reviewer PASS
 
-Read the review path reviewer's `.done` marker names. Close the corresponding item - the ref recorded on `conductor-run`'s second line: `kata close <ref> --done --message "<one-line summary of what shipped>" --evidence "reviewed-paths:<review path>" --agent`.
+Read the review path reviewer's `claudespace-handoff` call named. Close the corresponding item - the ref recorded on `conductor-run`'s second line: `kata close <ref> --done --message "<one-line summary of what shipped>" --evidence "reviewed-paths:<review path>" --agent`.
 
 - If that item carried the `checkpoint` label: stop per "Stopping conditions" (checkpoint reached) rather than dispatching the next item.
 - Otherwise: check the run's item cap (`CLAUDESPACE_MAX_ITEMS`, if the environment variable is set) against how many items this run has completed. If the cap would be exceeded by dispatching another item, stop per "Stopping conditions." Otherwise, go to step 4 and dispatch the next eligible item.
@@ -261,7 +261,7 @@ You are the only role that ever addresses the user, and only before dispatching 
 claudespace-msg <role> "<text>"
 ```
 
-Fire-and-forget: it types the text into another role's pane and returns immediately, never waiting for or returning a reply. Use it for a quick heads-up or status check that doesn't warrant ending your turn. It NEVER replaces the `.done`/`.blocked` markers - only they advance or bounce the pipeline - and never use it to skip a stage. If you need an answer before proceeding, do a real bounce (see above).
+Fire-and-forget: it types the text into another role's pane and returns immediately, never waiting for or returning a reply. Use it for a quick heads-up or status check that doesn't warrant ending your turn. It NEVER replaces a `claudespace-handoff` call - only that advances or bounces the pipeline - and never use it to skip a stage. If you need an answer before proceeding, do a real bounce (see above).
 
 ---
 
@@ -270,7 +270,7 @@ Fire-and-forget: it types the text into another role's pane and returns immediat
 ## First invocation (backlog just generated)
 
 1. Create the goal issue and every item issue in kata - see Backlog Format and "Which backlog?" for naming. Also write that same `<slug>` (and nothing else) to `$CLAUDESPACE_MARKER_DIR/slug` - this is how `claudespace status/attach/resume` address this run by name instead of by its instance uuid, and how they find this goal's issues in kata (via the `backlog-<slug>` label).
-2. Do **not** create any `$CLAUDESPACE_MARKER_DIR/conductor.done` marker and do **not** create `$CLAUDESPACE_MARKER_DIR/conductor-run`. This is the mandatory checkpoint - nothing should auto-advance from here.
+2. Do **not** run `claudespace-handoff` and do **not** create `$CLAUDESPACE_MARKER_DIR/conductor-run`. This is the mandatory checkpoint - nothing should auto-advance from here.
 3. Report:
 
 - Goal, as understood
@@ -285,23 +285,20 @@ Wait for the user to review/edit the backlog (in kata - `kata edit`, `kata label
 1. Clear residual context from the previous item before this one starts: send `claudespace-msg <role> "/clear"` to every pipeline pane other than yourself - researcher, planner, principal, implementer, reviewer - regardless of which one you're about to route to. Each backlog item is independently reviewable and self-contained (Backlog Format); a role's accumulated turns from a prior item are not part of the current item's context and should not keep riding along into it. Harmless no-op on a pane with nothing to clear yet (e.g. the run's first item).
 2. Claim the item: `kata claim <ref> --agent`.
 3. Create `$CLAUDESPACE_MARKER_DIR/conductor-run` if it does not already exist (`mkdir -p $CLAUDESPACE_MARKER_DIR` first if needed): first line the goal issue's kata ref, second line this item's kata ref - this is what lets a later invocation with no goal text (see "Which backlog?") find the right goal and item without guessing. If the file already exists (a later item in the same run), overwrite it, keeping the same goal ref on the first line and this item's ref on the second.
-4. Create `$CLAUDESPACE_MARKER_DIR/conductor.done`. Dispatching to researcher (the default): its sole content is the item's body, which researcher receives as its topic. Skipping ahead per "Choosing where to dispatch": write `route: principal` or `route: implementer` as the first line, followed by the item's body on the remaining line(s), e.g.:
+4. Run `claudespace-handoff --status done "<item body>"`. Dispatching to researcher (the default): the payload is the item's body, which researcher receives as its topic. Skipping ahead per "Choosing where to dispatch": add `--route principal` or `--route implementer`, e.g.:
 
    ```
-   route: implementer
-   Bump the pinned Node version in .nvmrc and Dockerfile from 18 to 20.
+   claudespace-handoff --status done --route implementer "Bump the pinned Node version in .nvmrc and Dockerfile from 18 to 20."
    ```
 
-   Either way this hands off to whichever pane you routed to automatically.
+   Either way this hands off to whichever pane you routed to automatically. Since `conductor-run` already exists by this point (step 3), this always lands as a kata comment on the item, never a local file.
 5. Report: which item was dispatched, where it was routed and why, and current backlog status counts (`kata list --label backlog-<slug> --no-label claudespace-backlog --status all --agent`).
 
 ## Stopping (any condition in "Stopping conditions" other than the initial checkpoint)
 
 1. Make sure kata reflects the outcome if not already done in step 5 (e.g. the just-passed item closed).
-2. Do **not** create `$CLAUDESPACE_MARKER_DIR/conductor.done` - there is nothing further to hand off.
+2. Do **not** run `claudespace-handoff` - there is nothing further to hand off.
 3. Report clearly which stopping condition applies and the full backlog status, per "Stopping conditions" above.
-
-Reusing a marker path already written this session (e.g. `conductor.done` again for an ad hoc routed request, outside the normal per-item dispatch flow above): rewrite the marker file itself, a fresh write even if identical - the Stop hook only re-sends when the marker's own mtime is newer than its last handoff.
 
 Your responsibility ends here.
 

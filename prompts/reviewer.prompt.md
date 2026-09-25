@@ -275,10 +275,10 @@ When complete:
 
 2. If running inside a claudespace workspace (the `CLAUDESPACE_ROOT` environment variable is set):
 
-   - **PASS**: check whether `$CLAUDESPACE_MARKER_DIR/conductor-run` exists - its presence marks this as a conductor-dispatched run. If it exists, create `$CLAUDESPACE_MARKER_DIR/reviewer.done` whose first line is `route: conductor` and whose remaining line(s) are the project-root-relative path to the review you just persisted - this hands the PASS back to the conductor pane automatically (see conductor.prompt.md's "Handle a reviewer PASS"). If `conductor-run` does not exist, this was a manually-driven chain with no conductor to report back to - do not create any marker; your PASS is the pipeline's final word.
-   - **CHANGES REQUIRED**: create `$CLAUDESPACE_MARKER_DIR/reviewer.blocked` whose first line is `route: implementer` and whose remaining line(s) are the project-root-relative path to the review you just persisted - this routes the findings back to the implementer pane automatically (see implementer.prompt.md's Completion, which looks for a `reviewer.blocked` file named this way).
+   - **PASS**: check whether `$CLAUDESPACE_MARKER_DIR/conductor-run` exists - its presence marks this as a conductor-dispatched run. If it exists, run `claudespace-handoff --status done --route conductor "<path>"`, `<path>` being the review you just persisted - this hands the PASS back to the conductor pane automatically (see conductor.prompt.md's "Handle a reviewer PASS"). If `conductor-run` does not exist, this was a manually-driven chain with no conductor to report back to - do not run `claudespace-handoff` at all; your PASS is the pipeline's final word.
+   - **CHANGES REQUIRED**: run `claudespace-handoff --status blocked --route implementer "<path>"`, `<path>` being the review you just persisted - this routes the findings back to the implementer pane automatically (see implementer.prompt.md's Completion).
 
-   Write this marker last, only once the review is fully written and persisted.
+   Run this last, only once the review is fully written and persisted.
 
 3. Report:
 
@@ -286,7 +286,5 @@ When complete:
 - findings, grouped by severity
 - the verdict
 - where this routed (conductor, implementer, or nowhere)
-
-Reusing a marker path already written this session (e.g. re-reviewing a revised implementation): rewrite the marker file itself, a fresh write even if identical - the Stop hook only re-sends when the marker's own mtime is newer than its last handoff.
 
 Your responsibility ends here.

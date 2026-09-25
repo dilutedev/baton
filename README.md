@@ -219,16 +219,22 @@ Two ways to deal with it:
 - `hooks/claudespace-dispatch.sh` is registered globally as a Stop hook. It
   no-ops instantly for any Claude Code session that isn't a claudespace pane
   (which is the overwhelming majority on a normal machine), so it's safe to
-  leave registered globally. For a claudespace pane, it watches for
-  `$CLAUDESPACE_MARKER_DIR/<role>.done` or `<role>.blocked`, written by the
-  role's prompt when it finishes a turn of work. It resolves the next role
-  (an explicit `route: <role>` first line in the marker, or a fixed
-  next-stage table: researcher→planner→principal→implementer→reviewer→conductor→researcher),
-  and sends the marker's payload into that role's pane via `herdr agent prompt`.
-- `bin/claudespace-msg <role> "<text>"` is a fire-and-forget way for one
-  role to ping another pane directly (e.g. the conductor interrupting a
-  stuck implementer) without going through the marker/Stop-hook hand-off.
-  It never waits for or returns a reply.
+  leave registered globally. For a claudespace pane, it watches for a new
+  `bin/claudespace-handoff` signal from the role that just finished a turn -
+  a kata comment on the current backlog item (the normal, conductor-driven
+  case) or, absent an item to comment on (a manually-driven chain with no
+  conductor), a local `$CLAUDESPACE_MARKER_DIR/<role>.done`/`<role>.blocked`
+  file. Either way it resolves the next role (an explicit `route: <role>`
+  line, or a fixed next-stage table:
+  researcher→planner→principal→implementer→reviewer→conductor→researcher),
+  and sends the payload into that role's pane via `herdr agent prompt`.
+- `bin/claudespace-handoff --status done|blocked [--route ROLE] "<payload>"`
+  is what a role's prompt runs on completing (or bouncing) a turn - see
+  above. `bin/claudespace-msg <role> "<text>"` is a different, fire-and-forget
+  way for one role to ping another pane directly (e.g. the conductor
+  interrupting a stuck implementer) without going through the
+  handoff/Stop-hook mechanism. It never waits for or returns a reply, and
+  never advances the pipeline.
 - `prompts/*.prompt.md` are the six personas, loaded as each pane's
   `--append-system-prompt-file` for the life of that pane.
 - The backlog itself - goals and their items - is never written to a file;

@@ -82,6 +82,30 @@ print(d)
 ' "$1" "$2"
 }
 
+# require_deps -> exits 1 with a clear message if herdr or kata aren't
+# installed and running. claudespace has no fallback for either - herdr is
+# the only way it creates/controls panes, kata is the only way the
+# conductor tracks a backlog - so failing fast here beats failing deep
+# inside a run with a confusing herdr/kata error.
+require_deps() {
+  command -v herdr >/dev/null 2>&1 || {
+    echo "claudespace: herdr is required but not on PATH - see https://herdr.dev/" >&2
+    exit 1
+  }
+  [ "$(herdr_json "$(herdr status --json 2>/dev/null)" server.status)" = "running" ] || {
+    echo "claudespace: herdr is installed but its server isn't running - run 'herdr status' to check" >&2
+    exit 1
+  }
+  command -v kata >/dev/null 2>&1 || {
+    echo "claudespace: kata is required but not on PATH - see https://github.com/kenn-io/kata" >&2
+    exit 1
+  }
+  [ "$(herdr_json "$(kata health --json 2>/dev/null)" ok)" = "True" ] || {
+    echo "claudespace: kata is installed but its daemon isn't healthy - run 'kata health' to check" >&2
+    exit 1
+  }
+}
+
 # trust_dir <dir> -> marks <dir> as trusted in ~/.claude.json
 # (projects[<dir>].hasTrustDialogAccepted = true), the same field Claude
 # Code itself sets when a human answers "Yes, I trust this folder". Naming
@@ -282,8 +306,13 @@ spawn_pipeline_panes() {
   layout="$(resolve_layout "$dir")"
 
   local role idx=0 pane_id
-  local pane_ids=()
+  local pane_ids=() agent_names=() session_flag_names=() session_ids=() models=() efforts=()
   local workspace_id="" tab_id="" root_pane_id="" owns_workspace=""
+  # Phase 1: create every pane and record what each role needs to launch
+  # with. Splits have to stay sequential - the grid plan (layout_split_plan)
+  # splits earlier panes to make later ones, so pane N+1 can depend on pane
+  # N already existing. Nothing here waits on a `claude` process, so it's
+  # fast regardless.
   for role in "${ROLES[@]}"; do
     idx=$((idx + 1))
 
@@ -326,62 +355,77 @@ spawn_pipeline_panes() {
     pane_ids[$idx]="$pane_id"
     herdr pane rename "$pane_id" "$role" >/dev/null 2>&1 || true
 
-    local agent_name="${role}-${instance}"
-    printf '%s\t%s\n' "$role" "$agent_name" >>"$agents_file"
+    agent_names[$idx]="${role}-${instance}"
+    printf '%s\t%s\n' "$role" "${agent_names[$idx]}" >>"$agents_file"
 
-    local session_id session_flag
-    session_flag=()
     if [ "$mode" = "start" ]; then
-      session_id="$(uuidgen | tr 'A-Z' 'a-z')"
-      printf '%s\t%s\n' "$role" "$session_id" >>"$sessions_file"
-      session_flag=(--session-id "$session_id")
+      session_ids[$idx]="$(uuidgen | tr 'A-Z' 'a-z')"
+      printf '%s\t%s\n' "$role" "${session_ids[$idx]}" >>"$sessions_file"
+      session_flag_names[$idx]="--session-id"
     else
-      session_id="$(awk -F'\t' -v r="$role" '$1==r{print $2}' "$sessions_file")"
-      [ -n "$session_id" ] || {
+      session_ids[$idx]="$(awk -F'\t' -v r="$role" '$1==r{print $2}' "$sessions_file")"
+      [ -n "${session_ids[$idx]}" ] || {
         echo "claudespace: no recorded session id for '$role' in $sessions_file - this instance predates session tracking and can't be auto-resumed" >&2
         exit 1
       }
-      session_flag=(--resume "$session_id")
+      session_flag_names[$idx]="--resume"
     fi
 
-    local model effort
-    model="$(resolve_setting "$dir" "$role" model)"
-    effort="$(resolve_setting "$dir" "$role" effort)"
-
-    # A file, not a literal string: the persona prompts run tens of KB with
-    # quotes/backticks/code-fences throughout, and herdr's agent start
-    # rejects arguments it can't safely re-encode for the pane's shell.
-    # A non-zero exit here can mean the launch genuinely failed, or just that
-    # the agent is sitting at some other startup dialog we didn't anticipate
-    # (trust_dir handles the one we know about) - agents.map already has this
-    # role's name, and herdr keeps it addressable either way, so warn and
-    # keep spawning the rest of the pipeline rather than aborting the run.
-    #
-    # A pane fresh out of `herdr pane split` briefly isn't "at its
-    # interactive shell prompt" yet (agent start requires that precondition)
-    # - retry a handful of times on that specific, fast-failing error before
-    # giving up; any other failure (e.g. a genuine readiness timeout) falls
-    # straight through to the warning, unretried. herdr's own docs: CLI
-    # server errors are JSON on stderr (exit 1), not stdout - redirect 2>&1
-    # into the capture or error.code below always reads as empty and this
-    # never retries anything.
-    local start_json start_attempt=0
-    while :; do
-      start_attempt=$((start_attempt + 1))
-      start_json="$(herdr agent start "$agent_name" --kind claude --pane "$pane_id" --timeout 60000 -- \
-        "${session_flag[@]}" --model "$model" --effort "$effort" \
-        --append-system-prompt-file "$PROMPT_DIR/$role.prompt.md" 2>&1)" && break
-      if [ "$(herdr_json "$start_json" error.code)" = "agent_pane_busy" ] && [ "$start_attempt" -lt 15 ]; then
-        sleep 1
-        continue
-      fi
-      echo "$start_json" >&2
-      echo "claudespace: warning - '$role' (pane $pane_id) didn't come up ready; check its pane" >&2
-      break
-    done
+    models[$idx]="$(resolve_setting "$dir" "$role" model)"
+    efforts[$idx]="$(resolve_setting "$dir" "$role" effort)"
   done
 
   echo "$owns_workspace" >"$marker_dir/owns_workspace"
+
+  # Phase 2: launch all 6 `claude` processes at once instead of one at a
+  # time. None of them depend on each other - the slow part is each
+  # `claude` process's own startup (model/auth init), not anything herdr
+  # does - so waiting for role N to finish before even starting role N+1
+  # was pure serialized dead time. Total wall time drops to roughly the
+  # slowest single launch instead of the sum of all six.
+  idx=0
+  for role in "${ROLES[@]}"; do
+    idx=$((idx + 1))
+    (
+      local pane_id="${pane_ids[$idx]}" agent_name="${agent_names[$idx]}"
+      local model="${models[$idx]}" effort="${efforts[$idx]}"
+      # A file, not a literal string: the persona prompts run tens of KB
+      # with quotes/backticks/code-fences throughout, and herdr's agent
+      # start rejects arguments it can't safely re-encode for the pane's
+      # shell. A non-zero exit here can mean the launch genuinely failed,
+      # or just that the agent is sitting at some other startup dialog we
+      # didn't anticipate (trust_dir handles the one we know about) -
+      # agents.map already has this role's name, and herdr keeps it
+      # addressable either way, so warn and let the rest of the pipeline's
+      # launches (each its own background job here) keep going.
+      #
+      # A pane fresh out of `herdr pane split` briefly isn't "at its
+      # interactive shell prompt" yet (agent start requires that
+      # precondition) - retry a handful of times on that specific,
+      # fast-failing error before giving up; any other failure (e.g. a
+      # genuine readiness timeout) falls straight through to the warning,
+      # unretried. herdr's own docs: CLI server errors are JSON on stderr
+      # (exit 1), not stdout - redirect 2>&1 into the capture or
+      # error.code below always reads as empty and this never retries
+      # anything.
+      local start_json start_attempt=0
+      while :; do
+        start_attempt=$((start_attempt + 1))
+        start_json="$(herdr agent start "$agent_name" --kind claude --pane "$pane_id" --timeout 60000 -- \
+          "${session_flag_names[$idx]}" "${session_ids[$idx]}" --model "$model" --effort "$effort" \
+          --append-system-prompt-file "$PROMPT_DIR/$role.prompt.md" 2>&1)" && exit 0
+        if [ "$(herdr_json "$start_json" error.code)" = "agent_pane_busy" ] && [ "$start_attempt" -lt 15 ]; then
+          sleep 1
+          continue
+        fi
+        echo "$start_json" >&2
+        echo "claudespace: warning - '$role' (pane $pane_id) didn't come up ready; check its pane" >&2
+        exit 1
+      done
+    ) &
+  done
+  wait
+
   echo "$workspace_id $tab_id"
 }
 
@@ -558,7 +602,7 @@ cmd_status() {
         echo "instance $uuid - $slug - stopped"
       fi
 
-      if [ -f "$d/slug" ] && command -v kata >/dev/null 2>&1; then
+      if [ -f "$d/slug" ]; then
         echo "  backlog: $slug"
         (cd "$dir" && kata list --label "backlog-$slug" --no-label claudespace-backlog --status all --agent 2>/dev/null) \
           | sed 's/^/    /' || true
@@ -581,26 +625,32 @@ cmd_config() {
 
 case "${1:-}" in
 start)
+  require_deps
   shift
   cmd_start "$@"
   ;;
 attach)
+  require_deps
   shift
   cmd_attach "$@"
   ;;
 resume)
+  require_deps
   shift
   cmd_resume "$@"
   ;;
 stop)
+  require_deps
   shift
   cmd_stop "$@"
   ;;
 status)
+  require_deps
   shift
   cmd_status "$@"
   ;;
 config)
+  require_deps
   shift
   cmd_config "$@"
   ;;
