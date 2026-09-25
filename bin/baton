@@ -316,8 +316,24 @@ spawn_pipeline_panes() {
   for role in "${ROLES[@]}"; do
     idx=$((idx + 1))
 
+    models[$idx]="$(resolve_setting "$dir" "$role" model)"
+    efforts[$idx]="$(resolve_setting "$dir" "$role" effort)"
+
     local env_flags=(--env "PATH=$BIN_DIR:$PATH" --env "BATON_ROOT=$dir" \
       --env "BATON_MARKER_DIR=$marker_dir" --env "BATON_ROLE=$role")
+    # z.ai GLM models need the same ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
+    # override the `zai` shell function applies for interactive use - baton
+    # calls `claude` directly (never through that function), so it has to
+    # set them itself as pane env instead.
+    case "${models[$idx]}" in
+    glm-*)
+      [ -n "${ZAI_API_KEY:-}" ] || {
+        echo "baton: role '$role' is configured for z.ai model '${models[$idx]}' but ZAI_API_KEY isn't set" >&2
+        exit 1
+      }
+      env_flags+=(--env "ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic" --env "ANTHROPIC_AUTH_TOKEN=$ZAI_API_KEY")
+      ;;
+    esac
 
     if [ "$idx" = 1 ]; then
       local create_json
@@ -370,9 +386,6 @@ spawn_pipeline_panes() {
       }
       session_flag_names[$idx]="--resume"
     fi
-
-    models[$idx]="$(resolve_setting "$dir" "$role" model)"
-    efforts[$idx]="$(resolve_setting "$dir" "$role" effort)"
   done
 
   echo "$owns_workspace" >"$marker_dir/owns_workspace"

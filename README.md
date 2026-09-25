@@ -178,22 +178,16 @@ launch with.
 ### Using z.ai / GLM models
 
 `--kind claude` (see [How it works](#how-it-works) below) always launches
-the canonical `claude` executable - there's no per-pane way today to swap
-in a different binary or command. To point a role's `claude` process at
-z.ai's GLM models instead of Anthropic's API, run it through the `zai`
-shell function (defined in `~/.bashrc`) rather than plain `claude`:
-
-```sh
-zai() {
-    ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" \
-    ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \
-    claude "$@"
-}
-```
-
-Set the role's `model` in `baton.conf` to the z.ai model name (e.g.
-`glm-5.3` or `glm-5.3-flash`) and use `zai` in place of `claude` for that
-pane.
+the canonical `claude` executable - there's no per-pane way to swap in a
+different binary or command. Instead, set the role's `model` in
+`baton.conf` to a z.ai model name (`glm-*`, e.g. `glm-5.3` or
+`glm-5.3-flash`); `spawn_pipeline_panes` in `bin/baton` detects that prefix
+and sets that pane's `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` env to
+z.ai's endpoint and `$ZAI_API_KEY` itself (the same override the `zai`
+shell function applies for interactive use), so plain `claude` in that pane
+talks to z.ai without needing the wrapper. Requires `ZAI_API_KEY` to be set
+wherever you run `baton start`/`resume` - it exits with an error naming the
+role if a `glm-*` role is configured and it isn't.
 
 ## Pane layout & readability
 
