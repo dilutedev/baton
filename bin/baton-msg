@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# claudespace-msg <role> "<text>"
+# baton-msg <role> "<text>"
 # Fire-and-forget: types text into another role's pane and returns
 # immediately. Never waits for or returns a reply, and never advances the
-# pipeline (that's the Stop hook's job, driven by claudespace-handoff calls -
+# pipeline (that's the Stop hook's job, driven by baton-handoff calls -
 # see that script and prompts/*.prompt.md's "Ad hoc messaging").
 set -euo pipefail
 
-role="${1:?usage: claudespace-msg <role> <text>}"
+role="${1:?usage: baton-msg <role> <text>}"
 shift
 text="$*"
 
-[ -n "${CLAUDESPACE_MARKER_DIR:-}" ] || {
-  echo "claudespace-msg: CLAUDESPACE_MARKER_DIR is not set" >&2
+[ -n "${BATON_MARKER_DIR:-}" ] || {
+  echo "baton-msg: BATON_MARKER_DIR is not set" >&2
   exit 1
 }
 
-agents_file="$CLAUDESPACE_MARKER_DIR/agents.map"
+agents_file="$BATON_MARKER_DIR/agents.map"
 [ -f "$agents_file" ] || {
-  echo "claudespace-msg: no agents.map found in $CLAUDESPACE_MARKER_DIR" >&2
+  echo "baton-msg: no agents.map found in $BATON_MARKER_DIR" >&2
   exit 1
 }
 
 agent_name="$(awk -F'\t' -v r="$role" '$1==r{print $2}' "$agents_file")"
 [ -n "$agent_name" ] || {
-  echo "claudespace-msg: unknown role '$role'" >&2
+  echo "baton-msg: unknown role '$role'" >&2
   exit 1
 }
 

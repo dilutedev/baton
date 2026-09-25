@@ -5,10 +5,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-chmod +x "$ROOT_DIR/bin/claudespace" "$ROOT_DIR/bin/claudespace-msg" "$ROOT_DIR/bin/claudespace-handoff" "$ROOT_DIR/hooks/claudespace-dispatch.sh"
+chmod +x "$ROOT_DIR/bin/baton" "$ROOT_DIR/bin/baton-msg" "$ROOT_DIR/bin/baton-handoff" "$ROOT_DIR/hooks/baton-dispatch.sh"
 
 for cmd in herdr claude kata uuidgen; do
-  command -v "$cmd" >/dev/null 2>&1 || echo "install.sh: warning - '$cmd' not found on PATH, claudespace needs it"
+  command -v "$cmd" >/dev/null 2>&1 || echo "install.sh: warning - '$cmd' not found on PATH, baton needs it"
 done
 
 rc_file=""
@@ -31,7 +31,7 @@ else
 fi
 
 settings_file="$HOME/.claude/settings.json"
-python3 - "$settings_file" "$ROOT_DIR/hooks/claudespace-dispatch.sh" <<'PYEOF'
+python3 - "$settings_file" "$ROOT_DIR/hooks/baton-dispatch.sh" <<'PYEOF'
 import json, sys, os
 
 settings_file, hook_cmd = sys.argv[1], sys.argv[2]
@@ -59,4 +59,4 @@ else:
     print(f"install.sh: registered {hook_cmd} as a Stop hook in {settings_file}")
 PYEOF
 
-echo "install.sh: done. Open a new shell (or source your rc file) and run 'claudespace start' in a project."
+echo "install.sh: done. Open a new shell (or source your rc file) and run 'baton start' in a project."

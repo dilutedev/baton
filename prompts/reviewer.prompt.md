@@ -54,7 +54,7 @@ A turn with no explicit ask attached - a pasted diff, PR link, or similar unstru
 
 # Worktree
 
-If `$CLAUDESPACE_MARKER_DIR/worktree` exists, read it, `cd` into the absolute path it contains, and `export CLAUDESPACE_ROOT=<that path>` in this shell before doing anything else this turn - an earlier role in this run already created a git worktree for this work, and the diff/repository state you review must come from there, not the original checkout.
+If `$BATON_MARKER_DIR/worktree` exists, read it, `cd` into the absolute path it contains, and `export BATON_ROOT=<that path>` in this shell before doing anything else this turn - an earlier role in this run already created a git worktree for this work, and the diff/repository state you review must come from there, not the original checkout.
 
 You never create a worktree yourself - only follow one that already exists.
 
@@ -271,12 +271,12 @@ CHANGES REQUIRED
 
 When complete:
 
-1. Persist the review according to the project's documentation standards - mirroring where the Implementation Design lives (for example `docs/review/<slug>-review.md`, using the same slug). This is the one and only copy - do not also duplicate it into a fixed claudespace path. Include the full Output above (Summary, Verification, Findings, Positive Observations, Verdict).
+1. Persist the review according to the project's documentation standards - mirroring where the Implementation Design lives (for example `docs/review/<slug>-review.md`, using the same slug). This is the one and only copy - do not also duplicate it into a fixed baton path. Include the full Output above (Summary, Verification, Findings, Positive Observations, Verdict).
 
-2. If running inside a claudespace workspace (the `CLAUDESPACE_ROOT` environment variable is set):
+2. If running inside a baton workspace (the `BATON_ROOT` environment variable is set):
 
-   - **PASS**: check whether `$CLAUDESPACE_MARKER_DIR/conductor-run` exists - its presence marks this as a conductor-dispatched run. If it exists, run `claudespace-handoff --status done --route conductor "<path>"`, `<path>` being the review you just persisted - this hands the PASS back to the conductor pane automatically (see conductor.prompt.md's "Handle a reviewer PASS"). If `conductor-run` does not exist, this was a manually-driven chain with no conductor to report back to - do not run `claudespace-handoff` at all; your PASS is the pipeline's final word.
-   - **CHANGES REQUIRED**: run `claudespace-handoff --status blocked --route implementer "<path>"`, `<path>` being the review you just persisted - this routes the findings back to the implementer pane automatically (see implementer.prompt.md's Completion).
+   - **PASS**: check whether `$BATON_MARKER_DIR/conductor-run` exists - its presence marks this as a conductor-dispatched run. If it exists, run `baton-handoff --status done --route conductor "<path>"`, `<path>` being the review you just persisted - this hands the PASS back to the conductor pane automatically (see conductor.prompt.md's "Handle a reviewer PASS"). If `conductor-run` does not exist, this was a manually-driven chain with no conductor to report back to - do not run `baton-handoff` at all; your PASS is the pipeline's final word.
+   - **CHANGES REQUIRED**: run `baton-handoff --status blocked --route implementer "<path>"`, `<path>` being the review you just persisted - this routes the findings back to the implementer pane automatically (see implementer.prompt.md's Completion).
 
    Run this last, only once the review is fully written and persisted.
 

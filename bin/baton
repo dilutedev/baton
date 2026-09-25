@@ -5,11 +5,11 @@
 # loaded as its system prompt for the life of the pane.
 #
 # A directory can hold multiple concurrent runs ("instances"), each its own
-# herdr workspace (or tab, if claudespace was launched from inside an
+# herdr workspace (or tab, if baton was launched from inside an
 # existing herdr pane) and its own marker dir under
-# $dir/.claudespace/s/<instance-uuid>/. Once a run's conductor persists a
+# $dir/.baton/s/<instance-uuid>/. Once a run's conductor persists a
 # backlog, that same instance dir also gets a `slug` file (the backlog's own
-# <slug>) so `claudespace status/attach/resume/stop` can address it by name
+# <slug>) so `baton status/attach/resume/stop` can address it by name
 # instead of by uuid.
 #
 # Run from inside an existing herdr pane: adds a tab to the current
@@ -17,34 +17,34 @@
 # way, $marker_dir/owns_workspace records which happened, so `stop` knows
 # whether it's safe to close the whole workspace or just the tab.
 #
-# Handoffs between panes are driven by hooks/claudespace-dispatch.sh
+# Handoffs between panes are driven by hooks/baton-dispatch.sh
 # (a global Stop hook) reading marker files each role writes on completion.
-# That hook and claudespace-msg key everything off $CLAUDESPACE_MARKER_DIR,
+# That hook and baton-msg key everything off $BATON_MARKER_DIR,
 # never off herdr workspace/tab ids, so they need no per-instance handling.
 #
-# Per-role model/effort come from claudespace.conf (see resolve_setting).
+# Per-role model/effort come from baton.conf (see resolve_setting).
 set -euo pipefail
 
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
 
 ROLES=(conductor researcher planner principal implementer reviewer)
-PROMPT_DIR="${CLAUDESPACE_PROMPT_DIR:-$ROOT_DIR/prompts}"
-GLOBAL_CONF="${CLAUDESPACE_CONF:-$ROOT_DIR/claudespace.conf}"
+PROMPT_DIR="${BATON_PROMPT_DIR:-$ROOT_DIR/prompts}"
+GLOBAL_CONF="${BATON_CONF:-$ROOT_DIR/baton.conf}"
 
 usage() {
   cat <<'EOF'
 Usage:
-  claudespace start [--think] [DIR]        Start a new instance for DIR (default: cwd)
-  claudespace status [DIR]                 List every instance for DIR, running or stopped
-  claudespace attach [REF] [DIR]           Switch into a running instance (REF: slug or uuid)
-  claudespace resume [REF] [DIR]           Reconnect a stopped instance's panes to their saved sessions
-  claudespace stop [REF] [DIR]             Kill a running instance
-  claudespace config [DIR]                 Show each role's resolved model/effort for DIR
+  baton start [--think] [DIR]        Start a new instance for DIR (default: cwd)
+  baton status [DIR]                 List every instance for DIR, running or stopped
+  baton attach [REF] [DIR]           Switch into a running instance (REF: slug or uuid)
+  baton resume [REF] [DIR]           Reconnect a stopped instance's panes to their saved sessions
+  baton stop [REF] [DIR]             Kill a running instance
+  baton config [DIR]                 Show each role's resolved model/effort for DIR
 
-REF is optional when DIR has exactly one instance. See claudespace.conf (next to
-this script's parent dir, or $CLAUDESPACE_CONF) for per-role model/effort
-configuration (project override: DIR/.claudespace/config).
+REF is optional when DIR has exactly one instance. See baton.conf (next to
+this script's parent dir, or $BATON_CONF) for per-role model/effort
+configuration (project override: DIR/.baton/config).
 EOF
 }
 
@@ -55,7 +55,7 @@ name_for() {
   # newline into a literal trailing dash before substitution can strip it.
   base="$(basename "$dir")"
   base="$(printf '%s' "$base" | tr -c 'a-zA-Z0-9_-' '-')"
-  echo "claudespace-${base}-${uuid}"
+  echo "baton-${base}-${uuid}"
 }
 
 # herdr_json <json> <dotted.path> -> the string value at that path, or
@@ -83,25 +83,25 @@ print(d)
 }
 
 # require_deps -> exits 1 with a clear message if herdr or kata aren't
-# installed and running. claudespace has no fallback for either - herdr is
+# installed and running. baton has no fallback for either - herdr is
 # the only way it creates/controls panes, kata is the only way the
 # conductor tracks a backlog - so failing fast here beats failing deep
 # inside a run with a confusing herdr/kata error.
 require_deps() {
   command -v herdr >/dev/null 2>&1 || {
-    echo "claudespace: herdr is required but not on PATH - see https://herdr.dev/" >&2
+    echo "baton: herdr is required but not on PATH - see https://herdr.dev/" >&2
     exit 1
   }
   [ "$(herdr_json "$(herdr status --json 2>/dev/null)" server.status)" = "running" ] || {
-    echo "claudespace: herdr is installed but its server isn't running - run 'herdr status' to check" >&2
+    echo "baton: herdr is installed but its server isn't running - run 'herdr status' to check" >&2
     exit 1
   }
   command -v kata >/dev/null 2>&1 || {
-    echo "claudespace: kata is required but not on PATH - see https://github.com/kenn-io/kata" >&2
+    echo "baton: kata is required but not on PATH - see https://github.com/kenn-io/kata" >&2
     exit 1
   }
   [ "$(herdr_json "$(kata health --json 2>/dev/null)" ok)" = "True" ] || {
-    echo "claudespace: kata is installed but its daemon isn't healthy - run 'kata health' to check" >&2
+    echo "baton: kata is installed but its daemon isn't healthy - run 'kata health' to check" >&2
     exit 1
   }
 }
@@ -109,7 +109,7 @@ require_deps() {
 # trust_dir <dir> -> marks <dir> as trusted in ~/.claude.json
 # (projects[<dir>].hasTrustDialogAccepted = true), the same field Claude
 # Code itself sets when a human answers "Yes, I trust this folder". Naming
-# <dir> to `claudespace start` already is that trust decision, so panes
+# <dir> to `baton start` already is that trust decision, so panes
 # would otherwise all stall on that dialog with no one watching to answer
 # it - herdr's agent start actually checks readiness (tmux never did), so
 # an unanswered dialog now blocks the whole spawn loop instead of sitting
@@ -132,11 +132,11 @@ with open(path, "w") as f:
 }
 
 # Resolves REF (a slug from an instance's `slug` file, a bare instance uuid,
-# or empty) against $dir/.claudespace/s/* and prints the matching uuid.
+# or empty) against $dir/.baton/s/* and prints the matching uuid.
 resolve_instance() {
   local dir="$1" ref="$2"
-  local base="$dir/.claudespace/s"
-  [ -d "$base" ] || { echo "claudespace: no instances found for $dir" >&2; return 1; }
+  local base="$dir/.baton/s"
+  [ -d "$base" ] || { echo "baton: no instances found for $dir" >&2; return 1; }
 
   if [ -n "$ref" ] && [ -d "$base/$ref" ]; then
     echo "$ref"
@@ -156,7 +156,7 @@ resolve_instance() {
 
   case "${#matches[@]}" in
   0)
-    echo "claudespace: no instance matching '${ref:-<any>}' in $dir - see 'claudespace status $dir'" >&2
+    echo "baton: no instance matching '${ref:-<any>}' in $dir - see 'baton status $dir'" >&2
     return 1
     ;;
   1)
@@ -164,7 +164,7 @@ resolve_instance() {
     return 0
     ;;
   *)
-    echo "claudespace: '$ref' is ambiguous ($dir), matches: ${matches[*]} - specify the instance uuid directly" >&2
+    echo "baton: '$ref' is ambiguous ($dir), matches: ${matches[*]} - specify the instance uuid directly" >&2
     return 1
     ;;
   esac
@@ -196,12 +196,12 @@ config_get() {
 }
 
 # resolve_setting <dir> <role> <model|effort> -> resolved value.
-# Precedence: DIR/.claudespace/config[role] > DIR/.claudespace/config[default]
+# Precedence: DIR/.baton/config[role] > DIR/.baton/config[default]
 #          > $GLOBAL_CONF[role] > $GLOBAL_CONF[default]
 #          > built-in fallback (sonnet / high).
 resolve_setting() {
   local dir="$1" role="$2" key="$3" val
-  local project_conf="$dir/.claudespace/config"
+  local project_conf="$dir/.baton/config"
 
   val="$(config_get "$project_conf" "${role}.${key}")"; [ -n "$val" ] && { echo "$val"; return; }
   val="$(config_get "$project_conf" "default.${key}")"; [ -n "$val" ] && { echo "$val"; return; }
@@ -216,14 +216,14 @@ resolve_setting() {
 
 # resolve_layout <dir> -> layout name for the pipeline tab. Not per-role
 # (it's a tab-level setting). Precedence:
-# DIR/.claudespace/config[layout] > $GLOBAL_CONF[layout] > "tiled".
+# DIR/.baton/config[layout] > $GLOBAL_CONF[layout] > "tiled".
 # One of: tiled (equal-ish grid, the default), main-vertical (conductor
 # large on the left, rest in a narrow column), main-horizontal (conductor
 # large on top, rest in a short row) - see layout_split_direction for how
 # each maps onto herdr's binary pane splits.
 resolve_layout() {
   local dir="$1" val
-  val="$(config_get "$dir/.claudespace/config" "layout")"; [ -n "$val" ] && { echo "$val"; return; }
+  val="$(config_get "$dir/.baton/config" "layout")"; [ -n "$val" ] && { echo "$val"; return; }
   val="$(config_get "$GLOBAL_CONF" "layout")"; [ -n "$val" ] && { echo "$val"; return; }
   echo "tiled"
 }
@@ -283,7 +283,7 @@ layout_split_plan() {
   esac
 }
 
-# Creates a herdr workspace (or, if claudespace is itself running inside a
+# Creates a herdr workspace (or, if baton is itself running inside a
 # herdr pane, a tab within that same workspace) with one pane per role,
 # writes $3/agents.map (role -> herdr agent name) and $3/owns_workspace
 # ("1" if we created a whole new workspace, so `stop` should close it
@@ -316,8 +316,8 @@ spawn_pipeline_panes() {
   for role in "${ROLES[@]}"; do
     idx=$((idx + 1))
 
-    local env_flags=(--env "PATH=$BIN_DIR:$PATH" --env "CLAUDESPACE_ROOT=$dir" \
-      --env "CLAUDESPACE_MARKER_DIR=$marker_dir" --env "CLAUDESPACE_ROLE=$role")
+    local env_flags=(--env "PATH=$BIN_DIR:$PATH" --env "BATON_ROOT=$dir" \
+      --env "BATON_MARKER_DIR=$marker_dir" --env "BATON_ROLE=$role")
 
     if [ "$idx" = 1 ]; then
       local create_json
@@ -335,7 +335,7 @@ spawn_pipeline_panes() {
       tab_id="$(herdr_json "$create_json" result.tab.tab_id)"
       pane_id="$(herdr_json "$create_json" result.root_pane.pane_id)"
       [ -n "$workspace_id" ] && [ -n "$tab_id" ] && [ -n "$pane_id" ] || {
-        echo "claudespace: herdr didn't return a workspace/tab/pane - got: $create_json" >&2
+        echo "baton: herdr didn't return a workspace/tab/pane - got: $create_json" >&2
         exit 1
       }
     else
@@ -348,7 +348,7 @@ spawn_pipeline_panes() {
       split_json="$(herdr pane split "${split_args[@]}")"
       pane_id="$(herdr_json "$split_json" result.pane.pane_id)"
       [ -n "$pane_id" ] || {
-        echo "claudespace: herdr pane split failed for role '$role' - got: $split_json" >&2
+        echo "baton: herdr pane split failed for role '$role' - got: $split_json" >&2
         exit 1
       }
     fi
@@ -365,7 +365,7 @@ spawn_pipeline_panes() {
     else
       session_ids[$idx]="$(awk -F'\t' -v r="$role" '$1==r{print $2}' "$sessions_file")"
       [ -n "${session_ids[$idx]}" ] || {
-        echo "claudespace: no recorded session id for '$role' in $sessions_file - this instance predates session tracking and can't be auto-resumed" >&2
+        echo "baton: no recorded session id for '$role' in $sessions_file - this instance predates session tracking and can't be auto-resumed" >&2
         exit 1
       }
       session_flag_names[$idx]="--resume"
@@ -419,7 +419,7 @@ spawn_pipeline_panes() {
           continue
         fi
         echo "$start_json" >&2
-        echo "claudespace: warning - '$role' (pane $pane_id) didn't come up ready; check its pane" >&2
+        echo "baton: warning - '$role' (pane $pane_id) didn't come up ready; check its pane" >&2
         exit 1
       done
     ) &
@@ -450,7 +450,7 @@ cmd_start() {
 
   for role in "${ROLES[@]}"; do
     [ -f "$PROMPT_DIR/$role.prompt.md" ] || {
-      echo "claudespace: missing $PROMPT_DIR/$role.prompt.md" >&2
+      echo "baton: missing $PROMPT_DIR/$role.prompt.md" >&2
       exit 1
     }
   done
@@ -459,17 +459,17 @@ cmd_start() {
     local repo_root gitignore
     repo_root="$(git -C "$dir" rev-parse --show-toplevel)"
     gitignore="$repo_root/.gitignore"
-    if ! grep -qx '\.claudespace/' "$gitignore" 2>/dev/null; then
+    if ! grep -qx '\.baton/' "$gitignore" 2>/dev/null; then
       # Append on its own line even if the file exists without a trailing newline.
       [ -s "$gitignore" ] && [ -n "$(tail -c1 "$gitignore")" ] && echo >>"$gitignore"
-      echo '.claudespace/' >>"$gitignore"
-      echo "claudespace: added .claudespace/ to $gitignore"
+      echo '.baton/' >>"$gitignore"
+      echo "baton: added .baton/ to $gitignore"
     fi
   fi
 
   local instance
   instance="$(uuidgen | tr 'A-Z' 'a-z' | cut -c1-8)"
-  local marker_dir="$dir/.claudespace/s/$instance"
+  local marker_dir="$dir/.baton/s/$instance"
   mkdir -p "$marker_dir/reports"
   if [ "$think" = 1 ]; then
     touch "$marker_dir/think"
@@ -487,7 +487,7 @@ cmd_start() {
   echo "$workspace_id" >"$marker_dir/workspace_id"
   echo "$tab_id" >"$marker_dir/tab_id"
 
-  echo "claudespace: started '$name' ($instance) for $dir"
+  echo "baton: started '$name' ($instance) for $dir"
   echo "  marker dir: $marker_dir"
   echo "  give the conductor pane your goal to kick off a run."
 
@@ -499,11 +499,11 @@ cmd_attach() {
   local instance
   instance="$(resolve_instance "$DIR" "$REF")" || exit 1
 
-  local marker_dir="$DIR/.claudespace/s/$instance"
+  local marker_dir="$DIR/.baton/s/$instance"
   local tab_id
   tab_id="$(cat "$marker_dir/tab_id" 2>/dev/null)"
   if [ -z "$tab_id" ] || ! herdr tab get "$tab_id" >/dev/null 2>&1; then
-    echo "claudespace: instance '$instance' isn't running - try 'claudespace resume ${REF:-$instance} $DIR'" >&2
+    echo "baton: instance '$instance' isn't running - try 'baton resume ${REF:-$instance} $DIR'" >&2
     exit 1
   fi
   attach_or_launch "$tab_id"
@@ -514,20 +514,20 @@ cmd_resume() {
   local instance
   instance="$(resolve_instance "$DIR" "$REF")" || exit 1
 
-  local marker_dir="$DIR/.claudespace/s/$instance"
+  local marker_dir="$DIR/.baton/s/$instance"
   local name
   name="$(name_for "$DIR" "$instance")"
 
   local existing_tab
   existing_tab="$(cat "$marker_dir/tab_id" 2>/dev/null)"
   if [ -n "$existing_tab" ] && herdr tab get "$existing_tab" >/dev/null 2>&1; then
-    echo "claudespace: instance '$instance' is already running - attaching instead of resuming"
+    echo "baton: instance '$instance' is already running - attaching instead of resuming"
     attach_or_launch "$existing_tab"
     return $?
   fi
 
   [ -f "$marker_dir/sessions.map" ] || {
-    echo "claudespace: $marker_dir has no sessions.map - this instance predates session tracking and can't be auto-resumed" >&2
+    echo "baton: $marker_dir has no sessions.map - this instance predates session tracking and can't be auto-resumed" >&2
     exit 1
   }
 
@@ -539,7 +539,7 @@ cmd_resume() {
   tab_id="${result##* }"
   echo "$workspace_id" >"$marker_dir/workspace_id"
   echo "$tab_id" >"$marker_dir/tab_id"
-  echo "claudespace: resumed '$name' ($instance) for $DIR"
+  echo "baton: resumed '$name' ($instance) for $DIR"
 
   attach_or_launch "$tab_id"
 }
@@ -549,7 +549,7 @@ cmd_stop() {
   local instance
   instance="$(resolve_instance "$DIR" "$REF")" || exit 1
 
-  local marker_dir="$DIR/.claudespace/s/$instance"
+  local marker_dir="$DIR/.baton/s/$instance"
   local tab_id workspace_id owns
   tab_id="$(cat "$marker_dir/tab_id" 2>/dev/null)"
   workspace_id="$(cat "$marker_dir/workspace_id" 2>/dev/null)"
@@ -557,18 +557,18 @@ cmd_stop() {
 
   if [ "$owns" = "1" ] && [ -n "$workspace_id" ]; then
     if herdr workspace close "$workspace_id" >/dev/null 2>&1; then
-      echo "claudespace: stopped '$instance'"
+      echo "baton: stopped '$instance'"
     else
-      echo "claudespace: instance '$instance' isn't running"
+      echo "baton: instance '$instance' isn't running"
     fi
   elif [ -n "$tab_id" ]; then
     if herdr tab close "$tab_id" >/dev/null 2>&1; then
-      echo "claudespace: stopped '$instance'"
+      echo "baton: stopped '$instance'"
     else
-      echo "claudespace: instance '$instance' isn't running"
+      echo "baton: instance '$instance' isn't running"
     fi
   else
-    echo "claudespace: instance '$instance' isn't running"
+    echo "baton: instance '$instance' isn't running"
   fi
 }
 
@@ -576,9 +576,9 @@ cmd_status() {
   local dir="${1:-.}"
   dir="$(cd "$dir" && pwd)"
 
-  local base="$dir/.claudespace/s"
+  local base="$dir/.baton/s"
   if [ ! -d "$base" ]; then
-    echo "claudespace: no instances for $dir"
+    echo "baton: no instances for $dir"
   else
     local d uuid slug tab_id agents_file role agent_name status_json status
     for d in "$base"/*/; do
@@ -604,7 +604,7 @@ cmd_status() {
 
       if [ -f "$d/slug" ]; then
         echo "  backlog: $slug"
-        (cd "$dir" && kata list --label "backlog-$slug" --no-label claudespace-backlog --status all --agent 2>/dev/null) \
+        (cd "$dir" && kata list --label "backlog-$slug" --no-label baton-backlog --status all --agent 2>/dev/null) \
           | sed 's/^/    /' || true
       fi
     done

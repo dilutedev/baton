@@ -1,4 +1,4 @@
-# claudespace
+# baton
 
 A [herdr](https://herdr.dev/)-based runner for a 6-role Claude Code pipeline:
 **conductor → researcher → planner/principal → implementer → reviewer**. Each
@@ -10,7 +10,7 @@ its pane automatically, so a run can go from a one-line goal to a reviewed
 backlog of shipped changes largely unattended.
 
 ```
-you: claudespace start ~/code/my-project
+you: baton start ~/code/my-project
      -> give the conductor pane a goal
 conductor -> researcher -> planner -> principal -> implementer -> reviewer -> conductor -> ...
              (loops per backlog item until the backlog is exhausted, blocked, or capped)
@@ -23,30 +23,30 @@ conductor -> researcher -> planner -> principal -> implementer -> reviewer -> co
 - [`kata`](https://github.com/kenn-io/kata) - the conductor persists the
   backlog as kata issues (see [Backlog tracking](#backlog-tracking) below)
   rather than a markdown file; run `kata init` once in a project before its
-  first `claudespace start` (the conductor also does this itself if it
+  first `baton start` (the conductor also does this itself if it
   hasn't been done yet)
 - `uuidgen` (ships with macOS and most Linux distros)
 - `bash` 3.2+ (the scripts avoid associative arrays for macOS's stock bash)
 - `python3` - used by `install.sh` to merge the Stop hook into
   `~/.claude/settings.json` without clobbering any other hooks you have, and
-  by `bin/claudespace` itself to parse herdr's JSON responses and to mark a
+  by `bin/baton` itself to parse herdr's JSON responses and to mark a
   project trusted in `~/.claude.json` before launching its panes
 
 ## Install
 
 ```
-git clone <this repo> ~/.claudespace
-~/.claudespace/install.sh
+git clone <this repo> ~/.baton
+~/.baton/install.sh
 ```
 
 `install.sh` is idempotent - safe to re-run. It:
 
 1. Makes the scripts executable.
 2. Warns if `herdr`, `claude`, or `uuidgen` aren't on PATH.
-3. Appends `export PATH="$HOME/.claudespace/bin:$PATH"` to your `~/.zshrc` or
+3. Appends `export PATH="$HOME/.baton/bin:$PATH"` to your `~/.zshrc` or
    `~/.bashrc` (whichever matches `$SHELL`), if that line isn't already
    there.
-4. Registers `~/.claudespace/hooks/claudespace-dispatch.sh` as a global Stop
+4. Registers `~/.baton/hooks/baton-dispatch.sh` as a global Stop
    hook in `~/.claude/settings.json`, if it isn't already registered. This
    only adds an entry to the `Stop` hook list - it doesn't touch any other
    hooks you have configured.
@@ -56,7 +56,7 @@ things `install.sh` does for you are:
 
 ```sh
 # in your shell rc
-export PATH="$HOME/.claudespace/bin:$PATH"
+export PATH="$HOME/.baton/bin:$PATH"
 ```
 
 ```jsonc
@@ -67,7 +67,7 @@ export PATH="$HOME/.claudespace/bin:$PATH"
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "$HOME/.claudespace/hooks/claudespace-dispatch.sh", "timeout": 10 }
+          { "type": "command", "command": "$HOME/.baton/hooks/baton-dispatch.sh", "timeout": 10 }
         ]
       }
     ]
@@ -75,18 +75,18 @@ export PATH="$HOME/.claudespace/bin:$PATH"
 }
 ```
 
-Open a new shell after installing, then run `claudespace start` inside any
+Open a new shell after installing, then run `baton start` inside any
 project directory.
 
 ## Usage
 
 ```
-claudespace start [--think] [DIR]   Start a new instance for DIR (default: cwd)
-claudespace status [DIR]            List every instance for DIR, running or stopped
-claudespace attach [REF] [DIR]      Switch into a running instance (REF: slug or uuid)
-claudespace resume [REF] [DIR]      Reconnect a stopped instance's panes to their saved sessions
-claudespace stop [REF] [DIR]        Kill a running instance
-claudespace config [DIR]            Show each role's resolved model/effort/layout for DIR
+baton start [--think] [DIR]   Start a new instance for DIR (default: cwd)
+baton status [DIR]            List every instance for DIR, running or stopped
+baton attach [REF] [DIR]      Switch into a running instance (REF: slug or uuid)
+baton resume [REF] [DIR]      Reconnect a stopped instance's panes to their saved sessions
+baton stop [REF] [DIR]        Kill a running instance
+baton config [DIR]            Show each role's resolved model/effort/layout for DIR
 ```
 
 `REF` is optional whenever `DIR` has exactly one instance. A "run" gets a
@@ -95,30 +95,30 @@ short uuid; once its conductor persists a backlog, the run also gets a
 uuid.
 
 A directory can have multiple concurrent runs, each its own herdr
-workspace/tab and its own marker dir under `DIR/.claudespace/s/<uuid>/`.
-`claudespace start` adds `.claudespace/` to that directory's `.gitignore`
+workspace/tab and its own marker dir under `DIR/.baton/s/<uuid>/`.
+`baton start` adds `.baton/` to that directory's `.gitignore`
 automatically if it's inside a git repo - this is per-project runtime state
 (session ids, hand-off markers, dispatch bookkeeping), not something to
 commit.
 
-Run `claudespace start`/`resume` from inside an existing herdr pane and it
+Run `baton start`/`resume` from inside an existing herdr pane and it
 adds a tab to your current workspace; run it from outside herdr and it
-creates a dedicated workspace. Either way, `claudespace stop` only ever
+creates a dedicated workspace. Either way, `baton stop` only ever
 closes what that run itself created - a tab it added to your workspace, or
 a workspace it created outright - never the rest of your panes.
 
 ### `--think`
 
-`claudespace start --think DIR` drops a `think` marker file in the run's
+`baton start --think DIR` drops a `think` marker file in the run's
 marker dir. The role prompts check for it and, when present, spend more
 deliberation on each turn (at the cost of speed). Leave it off for routine
 runs.
 
 ### Trust
 
-`claudespace start`/`resume` mark `DIR` as trusted in `~/.claude.json`
+`baton start`/`resume` mark `DIR` as trusted in `~/.claude.json`
 (the same field Claude Code itself sets when you answer "Yes, I trust this
-folder") before launching any panes. Naming `DIR` to `claudespace` already is
+folder") before launching any panes. Naming `DIR` to `baton` already is
 that trust decision - without this, all 6 panes would otherwise stall on that
 dialog with no one watching to answer it, since herdr's `agent start` (unlike
 a blind tmux `send-keys`) actually waits for the launched `claude` to become
@@ -129,7 +129,7 @@ interactive-ready.
 The conductor decomposes a goal into a backlog and drives the pipeline
 through it, same as always - but the backlog itself lives in
 [kata](https://github.com/kenn-io/kata), not a `docs/backlog-<slug>.md`
-file. Each goal becomes one kata issue (labeled `claudespace-backlog`); each
+file. Each goal becomes one kata issue (labeled `baton-backlog`); each
 backlog item becomes a child kata issue (labeled `backlog-<slug>`), linked
 to the items it depends on via kata's `--blocked-by` relationship instead of
 a hand-rolled `requires:` field. Item status is just kata issue state - open
@@ -137,20 +137,20 @@ and unowned is pending, claimed is in-progress, closed is done, and an open
 item kata's own dependency graph won't surface yet (via `kata ready`/`kata
 next`) is blocked. The conductor is still the only role that ever claims,
 closes, or edits a backlog item; `kata list --label backlog-<slug> --agent`
-in the project directory shows you the same thing `claudespace status`
+in the project directory shows you the same thing `baton status`
 already summarizes per run.
 
 ## Configuration
 
 Per-role `model`/`effort`, plus the window `layout` (see [Pane layout &
-readability](#pane-layout--readability) below), come from a `claudespace.conf`
+readability](#pane-layout--readability) below), come from a `baton.conf`
 file, with project-level settings winning over global ones:
 
 ```
-<project>/.claudespace/config   ->  <role>.<key>       (most specific)
-<project>/.claudespace/config   ->  default.<key>
-~/.claudespace/claudespace.conf ->  <role>.<key>        ($CLAUDESPACE_CONF overrides the path)
-~/.claudespace/claudespace.conf ->  default.<key>
+<project>/.baton/config   ->  <role>.<key>       (most specific)
+<project>/.baton/config   ->  default.<key>
+~/.baton/baton.conf ->  <role>.<key>        ($BATON_CONF overrides the path)
+~/.baton/baton.conf ->  default.<key>
 built-in fallback               ->  model=sonnet, effort=high, layout=tiled
 ```
 
@@ -158,7 +158,7 @@ Roles: `conductor`, `researcher`, `planner`, `principal`, `implementer`,
 `reviewer`. `model` is an alias (`sonnet`, `opus`, `fable`) or a full model
 name; `effort` is `low`/`medium`/`high`/`xhigh`/`max`.
 
-Example `~/.claudespace/claudespace.conf`:
+Example `~/.baton/baton.conf`:
 
 ```
 default.model=sonnet
@@ -170,10 +170,30 @@ implementer.effort=medium
 layout=tiled
 ```
 
-To override just one project, create `<project>/.claudespace/config` with
+To override just one project, create `<project>/.baton/config` with
 the same `<role>.<key>`/`default.<key>` syntax - it's checked first. Run
-`claudespace config [DIR]` any time to see exactly what a directory would
+`baton config [DIR]` any time to see exactly what a directory would
 launch with.
+
+### Using z.ai / GLM models
+
+`--kind claude` (see [How it works](#how-it-works) below) always launches
+the canonical `claude` executable - there's no per-pane way today to swap
+in a different binary or command. To point a role's `claude` process at
+z.ai's GLM models instead of Anthropic's API, run it through the `zai`
+shell function (defined in `~/.bashrc`) rather than plain `claude`:
+
+```sh
+zai() {
+    ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic" \
+    ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \
+    claude "$@"
+}
+```
+
+Set the role's `model` in `baton.conf` to the z.ai model name (e.g.
+`glm-5.3` or `glm-5.3-flash`) and use `zai` in place of `claude` for that
+pane.
 
 ## Pane layout & readability
 
@@ -189,7 +209,7 @@ Two ways to deal with it:
    you usually only read one role at a time (most often the conductor),
    this is the fastest fix and needs nothing changed.
 
-2. **Change the default layout.** Set `layout` in `claudespace.conf`
+2. **Change the default layout.** Set `layout` in `baton.conf`
    (global or per-project) to one of:
 
    - `tiled` - equal grid (default)
@@ -209,32 +229,45 @@ Two ways to deal with it:
 
 ## How it works
 
-- `bin/claudespace` is the CLI: it creates the herdr workspace/tab, splits
+- `bin/baton` is the CLI: it creates the herdr workspace/tab, splits
   one pane per role (`herdr pane split`), and starts `claude` in each via
   `herdr agent start <role>-<instance> --kind claude --pane <id> -- --model
   ... --effort ... --append-system-prompt-file prompts/<role>.prompt.md`,
-  with `CLAUDESPACE_ROOT`, `CLAUDESPACE_MARKER_DIR`, and `CLAUDESPACE_ROLE`
+  with `BATON_ROOT`, `BATON_MARKER_DIR`, and `BATON_ROLE`
   set on the pane's environment via `--env`. Each run's role→agent-name
   mapping is recorded in `$marker_dir/agents.map`.
-- `hooks/claudespace-dispatch.sh` is registered globally as a Stop hook. It
-  no-ops instantly for any Claude Code session that isn't a claudespace pane
+- `hooks/baton-dispatch.sh` is registered globally as a Stop hook. It
+  no-ops instantly for any Claude Code session that isn't a baton pane
   (which is the overwhelming majority on a normal machine), so it's safe to
-  leave registered globally. For a claudespace pane, it watches for a new
-  `bin/claudespace-handoff` signal from the role that just finished a turn -
+  leave registered globally. For a baton pane, it watches for a new
+  `bin/baton-handoff` signal from the role that just finished a turn -
   a kata comment on the current backlog item (the normal, conductor-driven
   case) or, absent an item to comment on (a manually-driven chain with no
-  conductor), a local `$CLAUDESPACE_MARKER_DIR/<role>.done`/`<role>.blocked`
+  conductor), a local `$BATON_MARKER_DIR/<role>.done`/`<role>.blocked`
   file. Either way it resolves the next role (an explicit `route: <role>`
   line, or a fixed next-stage table:
   researcher→planner→principal→implementer→reviewer→conductor→researcher),
   and sends the payload into that role's pane via `herdr agent prompt`.
-- `bin/claudespace-handoff --status done|blocked [--route ROLE] "<payload>"`
+- `bin/baton-handoff --status done|blocked [--route ROLE] "<payload>"`
   is what a role's prompt runs on completing (or bouncing) a turn - see
-  above. `bin/claudespace-msg <role> "<text>"` is a different, fire-and-forget
+  above. `bin/baton-msg <role> "<text>"` is a different, fire-and-forget
   way for one role to ping another pane directly (e.g. the conductor
   interrupting a stuck implementer) without going through the
   handoff/Stop-hook mechanism. It never waits for or returns a reply, and
   never advances the pipeline.
+- The same Stop hook also guards against a role finishing a turn on a
+  dispatched backlog item without actually calling `baton-handoff` -
+  every role but conductor is supposed to end every such turn with a `done`
+  or `blocked` call (see each prompt's Completion/bounce sections), and
+  nothing else is watching an unattended pane to notice if it doesn't. When
+  that happens the hook blocks the Stop twice (via
+  `hookSpecificOutput.additionalContext`, shown to the role as guidance, not
+  an error) reminding it to finish the handoff; if a third turn still ends
+  without one, it stops nudging and pings the conductor pane once instead,
+  so a human notices the stall rather than the pipeline going silently
+  quiet. A successful handoff at any point clears this state. Scoped to the
+  conductor-driven path only (`$BATON_MARKER_DIR/conductor-run`
+  exists) - a manually-driven chain already has a human attending the pane.
 - `prompts/*.prompt.md` are the six personas, loaded as each pane's
   `--append-system-prompt-file` for the life of that pane.
 - The backlog itself - goals and their items - is never written to a file;
@@ -245,8 +278,8 @@ Two ways to deal with it:
 
 | Variable                  | Set by                | Meaning                                        |
 |----------------------------|-----------------------|-------------------------------------------------|
-| `CLAUDESPACE_ROOT`          | `claudespace`          | The project directory the run was started for  |
-| `CLAUDESPACE_MARKER_DIR`    | `claudespace`          | This run's `.claudespace/s/<uuid>/` dir        |
-| `CLAUDESPACE_ROLE`          | `claudespace`          | This pane's role name                          |
-| `CLAUDESPACE_PROMPT_DIR`    | you (optional)        | Override where role `.prompt.md` files live    |
-| `CLAUDESPACE_CONF`          | you (optional)        | Override the global `claudespace.conf` path    |
+| `BATON_ROOT`          | `baton`          | The project directory the run was started for  |
+| `BATON_MARKER_DIR`    | `baton`          | This run's `.baton/s/<uuid>/` dir        |
+| `BATON_ROLE`          | `baton`          | This pane's role name                          |
+| `BATON_PROMPT_DIR`    | you (optional)        | Override where role `.prompt.md` files live    |
+| `BATON_CONF`          | you (optional)        | Override the global `baton.conf` path    |
