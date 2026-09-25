@@ -1,9 +1,10 @@
 # claudespace
 
-A tmux-based runner for a 6-role Claude Code pipeline: **conductor →
-researcher → planner/principal → implementer → reviewer**. Each role is a
-separate `claude` process in its own tmux pane, running with a fixed system
-prompt (its "persona") for the life of the pane. A global Claude Code Stop
+A [herdr](https://herdr.dev/)-based runner for a 6-role Claude Code pipeline:
+**conductor → researcher → planner/principal → implementer → reviewer**. Each
+role is a separate `claude` process in its own herdr pane, running with a
+fixed system prompt (its "persona") for the life of the pane. A global Claude
+Code Stop
 hook watches for hand-off marker files and types the next role's input into
 its pane automatically, so a run can go from a one-line goal to a reviewed
 backlog of shipped changes largely unattended.
@@ -17,12 +18,19 @@ conductor -> researcher -> planner -> principal -> implementer -> reviewer -> co
 
 ## Requirements
 
-- `tmux`
+- [`herdr`](https://herdr.dev/) (`herdr status` should show `server: running`)
 - the `claude` CLI (Claude Code), on your PATH
+- [`kata`](https://github.com/kenn-io/kata) - the conductor persists the
+  backlog as kata issues (see [Backlog tracking](#backlog-tracking) below)
+  rather than a markdown file; run `kata init` once in a project before its
+  first `claudespace start` (the conductor also does this itself if it
+  hasn't been done yet)
 - `uuidgen` (ships with macOS and most Linux distros)
 - `bash` 3.2+ (the scripts avoid associative arrays for macOS's stock bash)
-- `python3` (used only by `install.sh`, to merge the Stop hook into
-  `~/.claude/settings.json` without clobbering any other hooks you have)
+- `python3` - used by `install.sh` to merge the Stop hook into
+  `~/.claude/settings.json` without clobbering any other hooks you have, and
+  by `bin/claudespace` itself to parse herdr's JSON responses and to mark a
+  project trusted in `~/.claude.json` before launching its panes
 
 ## Install
 
@@ -34,7 +42,7 @@ git clone <this repo> ~/.claudespace
 `install.sh` is idempotent - safe to re-run. It:
 
 1. Makes the scripts executable.
-2. Warns if `tmux`, `claude`, or `uuidgen` aren't on PATH.
+2. Warns if `herdr`, `claude`, or `uuidgen` aren't on PATH.
 3. Appends `export PATH="$HOME/.claudespace/bin:$PATH"` to your `~/.zshrc` or
    `~/.bashrc` (whichever matches `$SHELL`), if that line isn't already
    there.
@@ -86,17 +94,18 @@ short uuid; once its conductor persists a backlog, the run also gets a
 `slug` (the backlog's own slug) so you can address it by name instead of by
 uuid.
 
-A directory can have multiple concurrent runs, each its own tmux
-window/session and its own marker dir under `DIR/.claudespace/s/<uuid>/`.
+A directory can have multiple concurrent runs, each its own herdr
+workspace/tab and its own marker dir under `DIR/.claudespace/s/<uuid>/`.
 `claudespace start` adds `.claudespace/` to that directory's `.gitignore`
 automatically if it's inside a git repo - this is per-project runtime state
 (session ids, hand-off markers, dispatch bookkeeping), not something to
 commit.
 
-Run `claudespace start`/`resume` from inside an existing tmux client and it
-adds a window to your current session; run it from outside tmux and it
-creates a dedicated session and attaches. It never nests a session inside
-another.
+Run `claudespace start`/`resume` from inside an existing herdr pane and it
+adds a tab to your current workspace; run it from outside herdr and it
+creates a dedicated workspace. Either way, `claudespace stop` only ever
+closes what that run itself created - a tab it added to your workspace, or
+a workspace it created outright - never the rest of your panes.
 
 ### `--think`
 
@@ -104,6 +113,32 @@ another.
 marker dir. The role prompts check for it and, when present, spend more
 deliberation on each turn (at the cost of speed). Leave it off for routine
 runs.
+
+### Trust
+
+`claudespace start`/`resume` mark `DIR` as trusted in `~/.claude.json`
+(the same field Claude Code itself sets when you answer "Yes, I trust this
+folder") before launching any panes. Naming `DIR` to `claudespace` already is
+that trust decision - without this, all 6 panes would otherwise stall on that
+dialog with no one watching to answer it, since herdr's `agent start` (unlike
+a blind tmux `send-keys`) actually waits for the launched `claude` to become
+interactive-ready.
+
+### Backlog tracking
+
+The conductor decomposes a goal into a backlog and drives the pipeline
+through it, same as always - but the backlog itself lives in
+[kata](https://github.com/kenn-io/kata), not a `docs/backlog-<slug>.md`
+file. Each goal becomes one kata issue (labeled `claudespace-backlog`); each
+backlog item becomes a child kata issue (labeled `backlog-<slug>`), linked
+to the items it depends on via kata's `--blocked-by` relationship instead of
+a hand-rolled `requires:` field. Item status is just kata issue state - open
+and unowned is pending, claimed is in-progress, closed is done, and an open
+item kata's own dependency graph won't surface yet (via `kata ready`/`kata
+next`) is blocked. The conductor is still the only role that ever claims,
+closes, or edits a backlog item; `kata list --label backlog-<slug> --agent`
+in the project directory shows you the same thing `claudespace status`
+already summarizes per run.
 
 ## Configuration
 
@@ -142,16 +177,17 @@ launch with.
 
 ## Pane layout & readability
 
-By default all 6 role panes are laid out with tmux's `tiled` layout - an
-equal grid. That's fine on a large monitor, but on a laptop screen six equal
-panes leaves each one too small to comfortably read.
+By default all 6 role panes are laid out `tiled` - a rough grid, built as a
+sequence of binary splits (herdr panes are a BSP tree, not a named grid
+layout like tmux's). That's fine on a large monitor, but on a laptop screen
+six equal panes leaves each one too small to comfortably read.
 
 Two ways to deal with it:
 
-1. **Zoom the pane you're reading (no config, works today).** tmux's
-   built-in `prefix + z` toggles the focused pane to fullscreen and back.
-   Since you usually only read one role at a time (most often the
-   conductor), this is the fastest fix and needs nothing changed.
+1. **Zoom the pane you're reading (no config, works today).** herdr's
+   built-in pane zoom toggles the focused pane to fullscreen and back. Since
+   you usually only read one role at a time (most often the conductor),
+   this is the fastest fix and needs nothing changed.
 
 2. **Change the default layout.** Set `layout` in `claudespace.conf`
    (global or per-project) to one of:
@@ -165,18 +201,21 @@ Two ways to deal with it:
    The conductor pane is always the "main" pane in these layouts, since
    it's the one you interact with most (giving it the goal, watching
    backlog progress). The other roles mostly just need to be glanced at
-   when something needs your attention - `prefix + z` still works on any
-   of them individually.
+   when something needs your attention - pane zoom still works on any of
+   them individually.
 
-   This is a tmux window-level setting, so it isn't per-role - just set
+   This is a tab-level setting, so it isn't per-role - just set
    `layout=...` at the top level of the config file, no role prefix.
 
 ## How it works
 
-- `bin/claudespace` is the CLI: it creates the tmux window, splits one pane
-  per role, and launches `claude --model ... --effort ... --append-system-prompt "$(cat prompts/<role>.prompt.md)"`
-  in each, exporting `CLAUDESPACE_ROOT`, `CLAUDESPACE_MARKER_DIR`, and
-  `CLAUDESPACE_ROLE` into the pane's environment.
+- `bin/claudespace` is the CLI: it creates the herdr workspace/tab, splits
+  one pane per role (`herdr pane split`), and starts `claude` in each via
+  `herdr agent start <role>-<instance> --kind claude --pane <id> -- --model
+  ... --effort ... --append-system-prompt-file prompts/<role>.prompt.md`,
+  with `CLAUDESPACE_ROOT`, `CLAUDESPACE_MARKER_DIR`, and `CLAUDESPACE_ROLE`
+  set on the pane's environment via `--env`. Each run's role→agent-name
+  mapping is recorded in `$marker_dir/agents.map`.
 - `hooks/claudespace-dispatch.sh` is registered globally as a Stop hook. It
   no-ops instantly for any Claude Code session that isn't a claudespace pane
   (which is the overwhelming majority on a normal machine), so it's safe to
@@ -185,13 +224,16 @@ Two ways to deal with it:
   role's prompt when it finishes a turn of work. It resolves the next role
   (an explicit `route: <role>` first line in the marker, or a fixed
   next-stage table: researcher→planner→principal→implementer→reviewer→conductor→researcher),
-  and types the marker's payload into that role's pane.
+  and sends the marker's payload into that role's pane via `herdr agent prompt`.
 - `bin/claudespace-msg <role> "<text>"` is a fire-and-forget way for one
   role to ping another pane directly (e.g. the conductor interrupting a
   stuck implementer) without going through the marker/Stop-hook hand-off.
   It never waits for or returns a reply.
 - `prompts/*.prompt.md` are the six personas, loaded as each pane's
-  `--append-system-prompt` for the life of that pane.
+  `--append-system-prompt-file` for the life of that pane.
+- The backlog itself - goals and their items - is never written to a file;
+  the conductor's prompt persists it as kata issues instead (see
+  [Backlog tracking](#backlog-tracking) above).
 
 ## Environment variables
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop hook: routes claudespace pipeline handoffs between tmux panes.
+# Stop hook: routes claudespace pipeline handoffs between herdr panes.
 #
 # No-ops instantly for any session that isn't a claudespace pane (the
 # overwhelming majority of Claude Code sessions on this machine), so it's
@@ -15,7 +15,7 @@ cat >/dev/null # drain stdin JSON; nothing in it is needed
 
 [ -n "${CLAUDESPACE_MARKER_DIR:-}" ] && [ -n "${CLAUDESPACE_ROLE:-}" ] || exit 0
 [ -d "$CLAUDESPACE_MARKER_DIR" ] || exit 0
-command -v tmux >/dev/null 2>&1 || exit 0
+command -v herdr >/dev/null 2>&1 || exit 0
 
 # macOS ships bash 3.2 (no associative arrays), so use a lookup function.
 next_role_for() {
@@ -63,19 +63,20 @@ dispatch_marker() {
 
   [ -n "$target" ] || return 0
 
-  local panes_file="$CLAUDESPACE_MARKER_DIR/panes.map"
-  [ -f "$panes_file" ] || return 0
-  local pane_id
-  pane_id="$(awk -F'\t' -v r="$target" '$1==r{print $2}' "$panes_file")"
-  [ -n "$pane_id" ] || return 0
-  tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pane_id" || return 0
+  local agents_file="$CLAUDESPACE_MARKER_DIR/agents.map"
+  [ -f "$agents_file" ] || return 0
+  local agent_name
+  agent_name="$(awk -F'\t' -v r="$target" '$1==r{print $2}' "$agents_file")"
+  [ -n "$agent_name" ] || return 0
 
   local flat_payload
   flat_payload="$(echo "$payload" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')"
 
-  tmux send-keys -t "$pane_id" -l -- "$flat_payload"
-  tmux send-keys -t "$pane_id" Enter
-  tmux select-pane -t "$pane_id" 2>/dev/null
+  # agent prompt sends text + Enter as one ordered submission, and refuses
+  # (rather than typing blind) if the target pane is sitting at an
+  # approval/question dialog - a real safety improvement over tmux send-keys.
+  herdr agent prompt "$agent_name" "$flat_payload" >/dev/null 2>&1
+  herdr agent focus "$agent_name" >/dev/null 2>&1
 }
 
 dispatch_marker "$CLAUDESPACE_MARKER_DIR/$CLAUDESPACE_ROLE.done"

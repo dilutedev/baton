@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
-# Launches/manages tmux windows with one pane per pipeline role
+# Launches/manages herdr workspaces/tabs with one pane per pipeline role
 # (conductor, researcher, planner, principal, implementer, reviewer),
 # each running `claude` with that role's persona from prompts/
 # loaded as its system prompt for the life of the pane.
 #
 # A directory can hold multiple concurrent runs ("instances"), each its own
-# tmux window/session and its own marker dir under
+# herdr workspace (or tab, if claudespace was launched from inside an
+# existing herdr pane) and its own marker dir under
 # $dir/.claudespace/s/<instance-uuid>/. Once a run's conductor persists a
 # backlog, that same instance dir also gets a `slug` file (the backlog's own
 # <slug>) so `claudespace status/attach/resume/stop` can address it by name
 # instead of by uuid.
 #
-# Run from inside an existing tmux client: adds a new window to the current
-# session and switches to it. Run from outside tmux: creates a dedicated
-# session and attaches. Never nests a session inside another.
+# Run from inside an existing herdr pane: adds a tab to the current
+# workspace. Run from outside herdr: creates a dedicated workspace. Either
+# way, $marker_dir/owns_workspace records which happened, so `stop` knows
+# whether it's safe to close the whole workspace or just the tab.
 #
 # Handoffs between panes are driven by hooks/claudespace-dispatch.sh
 # (a global Stop hook) reading marker files each role writes on completion.
 # That hook and claudespace-msg key everything off $CLAUDESPACE_MARKER_DIR,
-# never off tmux session/window names, so they need no per-instance handling.
+# never off herdr workspace/tab ids, so they need no per-instance handling.
 #
 # Per-role model/effort come from claudespace.conf (see resolve_setting).
 set -euo pipefail
@@ -56,40 +58,53 @@ name_for() {
   echo "claudespace-${base}-${uuid}"
 }
 
-# Prints "session:<name>" or "window:<window_id>" for a live tmux target
-# matching $1, or nothing if none exists.
-find_target() {
-  local name="$1"
-  if tmux has-session -t "$name" 2>/dev/null; then
-    echo "session:$name"
-    return 0
-  fi
-  local hit
-  hit="$(tmux list-windows -a -F '#{window_id}	#{window_name}' 2>/dev/null | awk -F'\t' -v n="$name" '$2==n{print $1; exit}'; true)"
-  if [ -n "$hit" ]; then
-    echo "window:$hit"
-  fi
-  return 0
+# herdr_json <json> <dotted.path> -> the string value at that path, or
+# nothing if any segment is missing/not a string. herdr's socket API always
+# returns JSON; this is a small, dependency-free (python3 is already a hard
+# requirement per install.sh) accessor so we don't have to regex nested
+# objects that reuse key names (e.g. "workspace_id" appears at three levels
+# of a `workspace create` response).
+herdr_json() {
+  python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+for key in sys.argv[2].split("."):
+    if isinstance(d, dict) and key in d:
+        d = d[key]
+    else:
+        sys.exit(0)
+if isinstance(d, (dict, list)):
+    sys.exit(0)
+print(d)
+' "$1" "$2"
 }
 
-attach_to_target() {
-  local target="$1"
-  case "$target" in
-  session:*)
-    if [ -n "${TMUX:-}" ]; then
-      tmux switch-client -t "${target#session:}"
-    else
-      exec tmux attach -t "${target#session:}"
-    fi
-    ;;
-  window:*)
-    if [ -n "${TMUX:-}" ]; then
-      tmux switch-client -t "${target#window:}"
-    else
-      exec tmux attach -t "${target#window:}"
-    fi
-    ;;
-  esac
+# trust_dir <dir> -> marks <dir> as trusted in ~/.claude.json
+# (projects[<dir>].hasTrustDialogAccepted = true), the same field Claude
+# Code itself sets when a human answers "Yes, I trust this folder". Naming
+# <dir> to `claudespace start` already is that trust decision, so panes
+# would otherwise all stall on that dialog with no one watching to answer
+# it - herdr's agent start actually checks readiness (tmux never did), so
+# an unanswered dialog now blocks the whole spawn loop instead of sitting
+# unnoticed.
+trust_dir() {
+  python3 -c '
+import json, os, sys
+path = os.path.expanduser("~/.claude.json")
+try:
+    with open(path) as f:
+        d = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    d = {}
+projects = d.setdefault("projects", {})
+proj = projects.setdefault(sys.argv[1], {})
+proj["hasTrustDialogAccepted"] = True
+with open(path, "w") as f:
+    json.dump(d, f, indent=2)
+' "$1"
 }
 
 # Resolves REF (a slug from an instance's `slug` file, a bare instance uuid,
@@ -175,12 +190,13 @@ resolve_setting() {
   esac
 }
 
-# resolve_layout <dir> -> tmux layout name for the pipeline window.
-# Not per-role (it's a window-level tmux setting). Precedence:
+# resolve_layout <dir> -> layout name for the pipeline tab. Not per-role
+# (it's a tab-level setting). Precedence:
 # DIR/.claudespace/config[layout] > $GLOBAL_CONF[layout] > "tiled".
-# One of tmux's built-in layouts: tiled (equal grid, the default),
-# main-vertical (conductor large on the left, rest in a narrow column),
-# main-horizontal (conductor large on top, rest in a short row).
+# One of: tiled (equal-ish grid, the default), main-vertical (conductor
+# large on the left, rest in a narrow column), main-horizontal (conductor
+# large on top, rest in a short row) - see layout_split_direction for how
+# each maps onto herdr's binary pane splits.
 resolve_layout() {
   local dir="$1" val
   val="$(config_get "$dir/.claudespace/config" "layout")"; [ -n "$val" ] && { echo "$val"; return; }
@@ -188,82 +204,193 @@ resolve_layout() {
   echo "tiled"
 }
 
-# Creates a tmux window/session named $2 in $1, spawns one pane per role,
-# writes $3/panes.map, and launches `claude` in each pane.
+# layout_split_plan <layout> <idx> -> "<base_idx> <direction> <ratio>": how
+# to create the idx'th role's pane (idx 2..6; idx 1 is the workspace/tab's
+# root pane, conductor, never split to begin with). <base_idx> is which
+# earlier idx's pane to split (not necessarily idx-1 - see tiled below);
+# <direction> is right/down; <ratio> is the --ratio to pass.
+#
+# Verified empirically (herdr's own docs don't say): --ratio X means the
+# EXISTING/base pane (the one split doesn't return as the new one) keeps
+# fraction X of its own current size; the newly split-off pane gets the
+# rest. A pane already occupied by a running agent can still be split
+# further - it just shrinks in place - so a role's pane can keep getting
+# smaller across several later idx's without disturbing it.
+#
+# main-vertical/-horizontal always split the immediately-preceding pane
+# (idx-1) - a plain chain, which for a single column/row of stacked panes
+# already comes out as clean equal bars: idx 2 carves the conductor/rest
+# split (conductor keeps the majority, 0.65); idx 3..6 then cascades equal
+# shares across the remaining 5 -> ratio = 1/(N-idx+2) where N=6.
+#
+# tiled is hardcoded for a real 2-row x 3-col grid instead of that same
+# chain (which, left unchecked, always shrinks the *first* pane made and
+# spirals the rest into ever-thinner slivers - equal area, but not
+# equal-looking boxes). Built as: split root into top/bottom halves, then
+# split top and bottom each into 3 equal columns - conductor top-left,
+# researcher bottom-left, planner top-middle, principal top-right,
+# implementer bottom-middle, reviewer bottom-right.
+layout_split_plan() {
+  local layout="$1" idx="$2" n_roles="$3"
+  case "$layout" in
+  main-vertical)
+    if [ "$idx" = 2 ]; then
+      echo "1 right 0.65"
+    else
+      echo "$((idx - 1)) down $(awk -v n="$n_roles" -v i="$idx" 'BEGIN { printf "%.6f", 1 / (n - i + 2) }')"
+    fi
+    ;;
+  main-horizontal)
+    if [ "$idx" = 2 ]; then
+      echo "1 down 0.65"
+    else
+      echo "$((idx - 1)) right $(awk -v n="$n_roles" -v i="$idx" 'BEGIN { printf "%.6f", 1 / (n - i + 2) }')"
+    fi
+    ;;
+  *)
+    case "$idx" in
+    2) echo "1 down 0.5" ;;
+    3) echo "1 right 0.333333" ;;
+    4) echo "3 right 0.5" ;;
+    5) echo "2 right 0.333333" ;;
+    6) echo "5 right 0.5" ;;
+    esac
+    ;;
+  esac
+}
+
+# Creates a herdr workspace (or, if claudespace is itself running inside a
+# herdr pane, a tab within that same workspace) with one pane per role,
+# writes $3/agents.map (role -> herdr agent name) and $3/owns_workspace
+# ("1" if we created a whole new workspace, so `stop` should close it
+# outright; "0" if we only added a tab to the caller's workspace, so `stop`
+# must close just that tab and leave the rest of the workspace alone).
 # $4 is "start" (mint a fresh --session-id per role into sessions.map) or
-# "resume" (read sessions.map and --resume each one). Prints the window id.
+# "resume" (read sessions.map and --resume each one). Prints
+# "<workspace_id> <tab_id>".
 spawn_pipeline_panes() {
   local dir="$1" name="$2" marker_dir="$3" mode="$4"
   local sessions_file="$marker_dir/sessions.map"
-  local panes_file="$marker_dir/panes.map"
-  : >"$panes_file"
+  local agents_file="$marker_dir/agents.map"
+  : >"$agents_file"
   [ "$mode" = "start" ] && : >"$sessions_file"
 
-  local win_id
-  if [ -n "${TMUX:-}" ]; then
-    # Already in tmux: add a window to the current session, never nest.
-    win_id="$(tmux new-window -n "$name" -c "$dir" -P -F '#{window_id}')"
-  else
-    tmux new-session -d -s "$name" -c "$dir" -n "$name"
-    win_id="$(tmux display-message -p -t "$name" '#{window_id}')"
-  fi
-  # Without this, automatic-rename (on by default) keeps renaming this window
-  # back to whatever its active pane's process looks like - which for a
-  # claude pane collapses to the generic "claude", indistinguishable from
-  # every other Claude Code window (see also automatic-rename-format in
-  # ~/.tmux.conf, which fixes the version-number case but not this one).
-  tmux set-option -w -t "$win_id" automatic-rename off
+  local instance
+  instance="$(basename "$marker_dir")"
 
-  local first=1 pane_id conductor_pane_id="" role session_id session_flag model effort launch_cmd
+  local layout
+  layout="$(resolve_layout "$dir")"
+
+  local role idx=0 pane_id
+  local pane_ids=()
+  local workspace_id="" tab_id="" root_pane_id="" owns_workspace=""
   for role in "${ROLES[@]}"; do
-    if [ "$first" = 1 ]; then
-      pane_id="$(tmux list-panes -t "$win_id" -F '#{pane_id}' | head -1)"
-      first=0
-    else
-      pane_id="$(tmux split-window -t "$win_id" -c "$dir" -P -F '#{pane_id}')"
-      tmux select-layout -t "$win_id" tiled >/dev/null
-    fi
-    [ "$role" = "conductor" ] && conductor_pane_id="$pane_id"
-    printf '%s\t%s\n' "$role" "$pane_id" >>"$panes_file"
-    # Claude Code overwrites pane_title itself once it starts (its own OSC
-    # title sequence), so a plain `select-pane -T` label gets clobbered - use
-    # a pane-scoped user option instead, which Claude Code never touches.
-    tmux set-option -p -t "$pane_id" @role "$role"
+    idx=$((idx + 1))
 
+    local env_flags=(--env "PATH=$BIN_DIR:$PATH" --env "CLAUDESPACE_ROOT=$dir" \
+      --env "CLAUDESPACE_MARKER_DIR=$marker_dir" --env "CLAUDESPACE_ROLE=$role")
+
+    if [ "$idx" = 1 ]; then
+      local create_json
+      if [ -n "${HERDR_WORKSPACE_ID:-}" ]; then
+        owns_workspace=0
+        create_json="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd "$dir" \
+          --label "$name" "${env_flags[@]}" --no-focus)"
+        workspace_id="$HERDR_WORKSPACE_ID"
+      else
+        owns_workspace=1
+        create_json="$(herdr workspace create --cwd "$dir" --label "$name" \
+          "${env_flags[@]}" --no-focus)"
+        workspace_id="$(herdr_json "$create_json" result.workspace.workspace_id)"
+      fi
+      tab_id="$(herdr_json "$create_json" result.tab.tab_id)"
+      pane_id="$(herdr_json "$create_json" result.root_pane.pane_id)"
+      [ -n "$workspace_id" ] && [ -n "$tab_id" ] && [ -n "$pane_id" ] || {
+        echo "claudespace: herdr didn't return a workspace/tab/pane - got: $create_json" >&2
+        exit 1
+      }
+    else
+      local split_base_idx split_dir split_ratio split_json split_args
+      read -r split_base_idx split_dir split_ratio <<<"$(layout_split_plan "$layout" "$idx" "${#ROLES[@]}")"
+      # Built as one array, expanded once, so it's never empty at expansion
+      # time - bash 3.2 (macOS's stock bash) treats "${arr[@]}" on a
+      # genuinely empty array as unbound under `set -u`, even when declared.
+      split_args=("${pane_ids[$split_base_idx]}" --direction "$split_dir" --ratio "$split_ratio" --cwd "$dir" "${env_flags[@]}" --no-focus)
+      split_json="$(herdr pane split "${split_args[@]}")"
+      pane_id="$(herdr_json "$split_json" result.pane.pane_id)"
+      [ -n "$pane_id" ] || {
+        echo "claudespace: herdr pane split failed for role '$role' - got: $split_json" >&2
+        exit 1
+      }
+    fi
+    pane_ids[$idx]="$pane_id"
+    herdr pane rename "$pane_id" "$role" >/dev/null 2>&1 || true
+
+    local agent_name="${role}-${instance}"
+    printf '%s\t%s\n' "$role" "$agent_name" >>"$agents_file"
+
+    local session_id session_flag
+    session_flag=()
     if [ "$mode" = "start" ]; then
       session_id="$(uuidgen | tr 'A-Z' 'a-z')"
       printf '%s\t%s\n' "$role" "$session_id" >>"$sessions_file"
-      session_flag="--session-id $session_id"
+      session_flag=(--session-id "$session_id")
     else
       session_id="$(awk -F'\t' -v r="$role" '$1==r{print $2}' "$sessions_file")"
       [ -n "$session_id" ] || {
         echo "claudespace: no recorded session id for '$role' in $sessions_file - this instance predates session tracking and can't be auto-resumed" >&2
         exit 1
       }
-      session_flag="--resume $session_id"
+      session_flag=(--resume "$session_id")
     fi
 
+    local model effort
     model="$(resolve_setting "$dir" "$role" model)"
     effort="$(resolve_setting "$dir" "$role" effort)"
 
-    launch_cmd="$(printf 'export CLAUDESPACE_ROOT=%q CLAUDESPACE_MARKER_DIR=%q CLAUDESPACE_ROLE=%q PATH=%q:"$PATH"; exec claude %s --model %q --effort %q --append-system-prompt "$(cat %q)"' \
-      "$dir" "$marker_dir" "$role" "$BIN_DIR" "$session_flag" "$model" "$effort" "$PROMPT_DIR/$role.prompt.md")"
-    tmux send-keys -t "$pane_id" "$launch_cmd" Enter
+    # A file, not a literal string: the persona prompts run tens of KB with
+    # quotes/backticks/code-fences throughout, and herdr's agent start
+    # rejects arguments it can't safely re-encode for the pane's shell.
+    # A non-zero exit here can mean the launch genuinely failed, or just that
+    # the agent is sitting at some other startup dialog we didn't anticipate
+    # (trust_dir handles the one we know about) - agents.map already has this
+    # role's name, and herdr keeps it addressable either way, so warn and
+    # keep spawning the rest of the pipeline rather than aborting the run.
+    #
+    # A pane fresh out of `herdr pane split` briefly isn't "at its
+    # interactive shell prompt" yet (agent start requires that precondition)
+    # - retry a handful of times on that specific, fast-failing error before
+    # giving up; any other failure (e.g. a genuine readiness timeout) falls
+    # straight through to the warning, unretried. herdr's own docs: CLI
+    # server errors are JSON on stderr (exit 1), not stdout - redirect 2>&1
+    # into the capture or error.code below always reads as empty and this
+    # never retries anything.
+    local start_json start_attempt=0
+    while :; do
+      start_attempt=$((start_attempt + 1))
+      start_json="$(herdr agent start "$agent_name" --kind claude --pane "$pane_id" --timeout 60000 -- \
+        "${session_flag[@]}" --model "$model" --effort "$effort" \
+        --append-system-prompt-file "$PROMPT_DIR/$role.prompt.md" 2>&1)" && break
+      if [ "$(herdr_json "$start_json" error.code)" = "agent_pane_busy" ] && [ "$start_attempt" -lt 15 ]; then
+        sleep 1
+        continue
+      fi
+      echo "$start_json" >&2
+      echo "claudespace: warning - '$role' (pane $pane_id) didn't come up ready; check its pane" >&2
+      break
+    done
   done
 
-  tmux set-option -w -t "$win_id" pane-border-status top
-  tmux set-option -w -t "$win_id" pane-border-format '#[bold]#{@role}#[default] #{pane_title}'
+  echo "$owns_workspace" >"$marker_dir/owns_workspace"
+  echo "$workspace_id $tab_id"
+}
 
-  local layout
-  layout="$(resolve_layout "$dir")"
-  case "$layout" in
-  main-vertical) tmux set-option -w -t "$win_id" main-pane-width 65% ;;
-  main-horizontal) tmux set-option -w -t "$win_id" main-pane-height 65% ;;
-  esac
-  tmux select-layout -t "$win_id" "$layout" >/dev/null
-  [ -n "$conductor_pane_id" ] && tmux select-pane -t "$conductor_pane_id"
-
-  echo "$win_id"
+attach_or_launch() {
+  local tab_id="$1"
+  herdr tab focus "$tab_id" >/dev/null
+  if [ -z "${HERDR_ENV:-}" ]; then
+    exec herdr
+  fi
 }
 
 cmd_start() {
@@ -307,18 +434,20 @@ cmd_start() {
   local name
   name="$(name_for "$dir" "$instance")"
 
-  local win_id
-  win_id="$(spawn_pipeline_panes "$dir" "$name" "$marker_dir" start)"
+  trust_dir "$dir"
+
+  local result workspace_id tab_id
+  result="$(spawn_pipeline_panes "$dir" "$name" "$marker_dir" start)"
+  workspace_id="${result%% *}"
+  tab_id="${result##* }"
+  echo "$workspace_id" >"$marker_dir/workspace_id"
+  echo "$tab_id" >"$marker_dir/tab_id"
 
   echo "claudespace: started '$name' ($instance) for $dir"
   echo "  marker dir: $marker_dir"
   echo "  give the conductor pane your goal to kick off a run."
 
-  if [ -n "${TMUX:-}" ]; then
-    tmux switch-client -t "$win_id"
-  else
-    exec tmux attach -t "$name"
-  fi
+  attach_or_launch "$tab_id"
 }
 
 cmd_attach() {
@@ -326,14 +455,14 @@ cmd_attach() {
   local instance
   instance="$(resolve_instance "$DIR" "$REF")" || exit 1
 
-  local name target
-  name="$(name_for "$DIR" "$instance")"
-  target="$(find_target "$name")"
-  if [ -z "$target" ]; then
+  local marker_dir="$DIR/.claudespace/s/$instance"
+  local tab_id
+  tab_id="$(cat "$marker_dir/tab_id" 2>/dev/null)"
+  if [ -z "$tab_id" ] || ! herdr tab get "$tab_id" >/dev/null 2>&1; then
     echo "claudespace: instance '$instance' isn't running - try 'claudespace resume ${REF:-$instance} $DIR'" >&2
     exit 1
   fi
-  attach_to_target "$target"
+  attach_or_launch "$tab_id"
 }
 
 cmd_resume() {
@@ -341,30 +470,34 @@ cmd_resume() {
   local instance
   instance="$(resolve_instance "$DIR" "$REF")" || exit 1
 
-  local name target
+  local marker_dir="$DIR/.claudespace/s/$instance"
+  local name
   name="$(name_for "$DIR" "$instance")"
-  target="$(find_target "$name")"
-  if [ -n "$target" ]; then
+
+  local existing_tab
+  existing_tab="$(cat "$marker_dir/tab_id" 2>/dev/null)"
+  if [ -n "$existing_tab" ] && herdr tab get "$existing_tab" >/dev/null 2>&1; then
     echo "claudespace: instance '$instance' is already running - attaching instead of resuming"
-    attach_to_target "$target"
+    attach_or_launch "$existing_tab"
     return $?
   fi
 
-  local marker_dir="$DIR/.claudespace/s/$instance"
   [ -f "$marker_dir/sessions.map" ] || {
     echo "claudespace: $marker_dir has no sessions.map - this instance predates session tracking and can't be auto-resumed" >&2
     exit 1
   }
 
-  local win_id
-  win_id="$(spawn_pipeline_panes "$DIR" "$name" "$marker_dir" resume)"
+  trust_dir "$DIR"
+
+  local result workspace_id tab_id
+  result="$(spawn_pipeline_panes "$DIR" "$name" "$marker_dir" resume)"
+  workspace_id="${result%% *}"
+  tab_id="${result##* }"
+  echo "$workspace_id" >"$marker_dir/workspace_id"
+  echo "$tab_id" >"$marker_dir/tab_id"
   echo "claudespace: resumed '$name' ($instance) for $DIR"
 
-  if [ -n "${TMUX:-}" ]; then
-    tmux switch-client -t "$win_id"
-  else
-    exec tmux attach -t "$name"
-  fi
+  attach_or_launch "$tab_id"
 }
 
 cmd_stop() {
@@ -372,20 +505,27 @@ cmd_stop() {
   local instance
   instance="$(resolve_instance "$DIR" "$REF")" || exit 1
 
-  local name target
-  name="$(name_for "$DIR" "$instance")"
-  target="$(find_target "$name")"
-  case "$target" in
-  session:*)
-    tmux kill-session -t "${target#session:}" && echo "claudespace: stopped '$name' ($instance)"
-    ;;
-  window:*)
-    tmux kill-window -t "${target#window:}" && echo "claudespace: stopped '$name' ($instance)"
-    ;;
-  *)
+  local marker_dir="$DIR/.claudespace/s/$instance"
+  local tab_id workspace_id owns
+  tab_id="$(cat "$marker_dir/tab_id" 2>/dev/null)"
+  workspace_id="$(cat "$marker_dir/workspace_id" 2>/dev/null)"
+  owns="$(cat "$marker_dir/owns_workspace" 2>/dev/null)"
+
+  if [ "$owns" = "1" ] && [ -n "$workspace_id" ]; then
+    if herdr workspace close "$workspace_id" >/dev/null 2>&1; then
+      echo "claudespace: stopped '$instance'"
+    else
+      echo "claudespace: instance '$instance' isn't running"
+    fi
+  elif [ -n "$tab_id" ]; then
+    if herdr tab close "$tab_id" >/dev/null 2>&1; then
+      echo "claudespace: stopped '$instance'"
+    else
+      echo "claudespace: instance '$instance' isn't running"
+    fi
+  else
     echo "claudespace: instance '$instance' isn't running"
-    ;;
-  esac
+  fi
 }
 
 cmd_status() {
@@ -396,28 +536,35 @@ cmd_status() {
   if [ ! -d "$base" ]; then
     echo "claudespace: no instances for $dir"
   else
-    local d uuid slug name target
+    local d uuid slug tab_id agents_file role agent_name status_json status
     for d in "$base"/*/; do
       [ -d "$d" ] || continue
       uuid="$(basename "$d")"
       slug="(no goal yet)"
       [ -f "$d/slug" ] && slug="$(cat "$d/slug")"
-      name="$(name_for "$dir" "$uuid")"
-      target="$(find_target "$name")"
-      if [ -n "$target" ]; then
+      tab_id="$(cat "$d/tab_id" 2>/dev/null)"
+      if [ -n "$tab_id" ] && herdr tab get "$tab_id" >/dev/null 2>&1; then
         echo "instance $uuid - $slug - running"
-        tmux list-panes -t "${target#*:}" -F '  #{pane_title}: #{pane_id} (#{pane_current_command})'
+        agents_file="$d/agents.map"
+        if [ -f "$agents_file" ]; then
+          while IFS=$'\t' read -r role agent_name; do
+            [ -n "$role" ] || continue
+            status_json="$(herdr agent get "$agent_name" 2>/dev/null)"
+            status="$(herdr_json "$status_json" result.agent.agent_status)"
+            printf '  %-11s %s (%s)\n' "$role" "$agent_name" "${status:-unknown}"
+          done <"$agents_file"
+        fi
       else
         echo "instance $uuid - $slug - stopped"
       fi
+
+      if [ -f "$d/slug" ] && command -v kata >/dev/null 2>&1; then
+        echo "  backlog: $slug"
+        (cd "$dir" && kata list --label "backlog-$slug" --no-label claudespace-backlog --status all --agent 2>/dev/null) \
+          | sed 's/^/    /' || true
+      fi
     done
   fi
-
-  shopt -s nullglob
-  for backlog in "$dir"/docs/backlog-*.md; do
-    echo "backlog: $backlog"
-    grep -E '^- status:' "$backlog" | sort | uniq -c
-  done
 }
 
 cmd_config() {

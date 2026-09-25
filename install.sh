@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 chmod +x "$ROOT_DIR/bin/claudespace" "$ROOT_DIR/bin/claudespace-msg" "$ROOT_DIR/hooks/claudespace-dispatch.sh"
 
-for cmd in tmux claude uuidgen; do
+for cmd in herdr claude kata uuidgen; do
   command -v "$cmd" >/dev/null 2>&1 || echo "install.sh: warning - '$cmd' not found on PATH, claudespace needs it"
 done
 

@@ -15,17 +15,16 @@ text="$*"
   exit 1
 }
 
-panes_file="$CLAUDESPACE_MARKER_DIR/panes.map"
-[ -f "$panes_file" ] || {
-  echo "claudespace-msg: no panes.map found in $CLAUDESPACE_MARKER_DIR" >&2
+agents_file="$CLAUDESPACE_MARKER_DIR/agents.map"
+[ -f "$agents_file" ] || {
+  echo "claudespace-msg: no agents.map found in $CLAUDESPACE_MARKER_DIR" >&2
   exit 1
 }
 
-pane_id="$(awk -F'\t' -v r="$role" '$1==r{print $2}' "$panes_file")"
-[ -n "$pane_id" ] || {
+agent_name="$(awk -F'\t' -v r="$role" '$1==r{print $2}' "$agents_file")"
+[ -n "$agent_name" ] || {
   echo "claudespace-msg: unknown role '$role'" >&2
   exit 1
 }
 
-tmux send-keys -t "$pane_id" -l -- "$text"
-tmux send-keys -t "$pane_id" Enter
+herdr agent prompt "$agent_name" "$text"
