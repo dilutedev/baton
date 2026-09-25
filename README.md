@@ -16,6 +16,8 @@ conductor -> researcher -> planner -> principal -> implementer -> reviewer -> co
              (loops per backlog item until the backlog is exhausted, blocked, or capped)
 ```
 
+Inspired by [ayorcodes/claudespace](https://github.com/ayorcodes/claudespace).
+
 ## Requirements
 
 - [`herdr`](https://herdr.dev/) (`herdr status` should show `server: running`)
