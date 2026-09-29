@@ -6,10 +6,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 chmod +x "$ROOT_DIR/bin/baton" "$ROOT_DIR/bin/baton-msg" "$ROOT_DIR/bin/baton-handoff" \
-  "$ROOT_DIR/hooks/baton-dispatch.sh" "$ROOT_DIR/hooks/baton-session-start.sh"
+  "$ROOT_DIR/hooks/baton-dispatch.sh"
 
-for cmd in herdr claude kata uuidgen; do
+for cmd in herdr kata uuidgen; do
   command -v "$cmd" >/dev/null 2>&1 || echo "install.sh: warning - '$cmd' not found on PATH, baton needs it"
+done
+
+for cmd in claude codex omp; do
+  command -v "$cmd" >/dev/null 2>&1 || echo "install.sh: note - '$cmd' not found on PATH; only needed for roles configured to use it (see baton.conf)"
 done
 
 rc_file=""
@@ -32,10 +36,10 @@ else
 fi
 
 settings_file="$HOME/.claude/settings.json"
-python3 - "$settings_file" "$ROOT_DIR/hooks/baton-dispatch.sh" "$ROOT_DIR/hooks/baton-session-start.sh" <<'PYEOF'
+python3 - "$settings_file" "$ROOT_DIR/hooks/baton-dispatch.sh" <<'PYEOF'
 import json, sys, os
 
-settings_file, stop_hook_cmd, session_start_hook_cmd = sys.argv[1:]
+settings_file, stop_hook_cmd = sys.argv[1:]
 data = {}
 if os.path.exists(settings_file):
     with open(settings_file) as f:
@@ -58,7 +62,6 @@ def register(event, matcher, hook_cmd):
     return True
 
 changed = register("Stop", "", stop_hook_cmd)
-changed = register("SessionStart", "clear", session_start_hook_cmd) or changed
 
 if changed:
     os.makedirs(os.path.dirname(settings_file), exist_ok=True)
