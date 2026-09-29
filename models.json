@@ -1,0 +1,5 @@
+{
+  "claude": ["sonnet", "opus", "haiku"],
+  "codex": ["gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"],
+  "omp": ["kimi-k3", "kimi-k2.6", "kimi-k2.7-code"]
+}

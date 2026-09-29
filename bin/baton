@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Launches/manages herdr workspaces/tabs with one pane per pipeline role
-# (conductor, researcher, planner, principal, implementer, reviewer),
-# each running `claude` with that role's persona from prompts/
-# loaded as its system prompt for the life of the pane.
+# (conductor, researcher, planner, principal, implementer, reviewer), each
+# running whatever CLI agent (claude, codex, omp, ...) that role is
+# configured for, with that role's persona from prompts/ loaded for the
+# life of the pane (see tool_launch_args/tool_needs_typed_persona).
 #
 # A directory can hold multiple concurrent runs ("instances"), each its own
 # herdr workspace (or tab, if baton was launched from inside an
@@ -17,12 +18,20 @@
 # way, $marker_dir/owns_workspace records which happened, so `stop` knows
 # whether it's safe to close the whole workspace or just the tab.
 #
-# Handoffs between panes are driven by hooks/baton-dispatch.sh
-# (a global Stop hook) reading marker files each role writes on completion.
-# That hook and baton-msg key everything off $BATON_MARKER_DIR,
-# never off herdr workspace/tab ids, so they need no per-instance handling.
+# Handoffs between panes are driven by baton-handoff itself (it forwards
+# the payload to the next role's pane the moment a role calls it), so they
+# work the same for every tool. hooks/baton-dispatch.sh (a Claude Code-only
+# Stop hook) only adds a safety net on top: nagging a Claude pane that ended
+# its turn without calling baton-handoff.
 #
-# Per-role model/effort come from baton.conf (see resolve_setting).
+# Per-role tool/model/effort come from baton.conf (see resolve_setting).
+# Nothing here tries to resume a role's previous underlying conversation -
+# see baton.conf's header for why.
+#
+# `baton start`/`resume`'s interactive screen (configure_roles_interactively)
+# never takes typed model text - model choices are curated per tool in
+# models.json (see models_for_tool), since a tool's valid model ids aren't
+# something baton can discover from a flag.
 set -euo pipefail
 
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,22 +40,38 @@ ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
 ROLES=(conductor researcher planner principal implementer reviewer)
 PROMPT_DIR="${BATON_PROMPT_DIR:-$ROOT_DIR/prompts}"
 GLOBAL_CONF="${BATON_CONF:-$ROOT_DIR/baton.conf}"
+MODELS_FILE="${BATON_MODELS:-$ROOT_DIR/models.json}"
+
+# Computed once, here, against this process's real stdout - not inside
+# use_color() itself. `paint`/`use_color` get called from inside `$(...)`
+# command substitutions all over this file (cmd_status, the config TUI); fd 1
+# *inside* a command substitution is always a pipe, never a tty, so an
+# `[ -t 1 ]` check done at call time would report "not a terminal" even when
+# actually running interactively. Checking once here, before anything
+# forks a command-substitution subshell, and reading the answer back
+# afterward avoids that trap.
+BATON_USE_COLOR=0
+[ -z "${NO_COLOR:-}" ] && [ -t 1 ] && BATON_USE_COLOR=1
 
 usage() {
   cat <<'EOF'
 Usage:
-  baton start [--think] [--profile=aiisciced12|sundayisaacandy] [DIR]
-                                    Start a new instance for DIR (default: cwd)
-  baton status [DIR]                 List every instance for DIR, running or stopped
-  baton attach [REF] [DIR]           Switch into a running instance (REF: slug or uuid)
-  baton resume [--profile=aiisciced12|sundayisaacandy] [REF] [DIR]
-                                    Reconnect a stopped instance's panes to their saved sessions
-  baton stop [REF] [DIR]             Kill a running instance
-  baton remove [REF] [DIR]           Stop and delete an instance's Baton files
-  baton config [DIR]                 Show each role's resolved model/effort/profile for DIR
+  baton start [--think] [--yes] [DIR]  Start a new instance for DIR (default: cwd)
+  baton status [DIR]                   List every instance for DIR, running or stopped
+  baton attach [REF] [DIR]             Switch into a running instance (REF: slug or uuid)
+  baton resume [--yes] [REF] [DIR]     Relaunch a stopped instance's panes (fresh sessions, same instance)
+  baton stop [REF] [DIR]               Kill a running instance
+  baton remove [REF] [DIR]             Stop and delete an instance's Baton files
+  baton config [DIR]                   Show each role's resolved tool/model/effort for DIR
 
-REF is optional when DIR has exactly one instance. See baton.conf (next to
-this script's parent dir, or $BATON_CONF) for per-role model/effort
+REF is optional when DIR has exactly one instance.
+
+start/resume show each role's tool/model/effort and let you change any of
+them interactively (no flags needed) before launching - resume shows
+whatever was actually used last time, since those edits are what's already
+in DIR/.baton/config. Pass --yes (or -y) to skip the prompt and launch with
+whatever's already configured. See baton.conf (next to this script's parent
+dir, or $BATON_CONF) for the underlying per-role tool/model/effort
 configuration (project override: DIR/.baton/config).
 EOF
 }
@@ -107,22 +132,6 @@ require_deps() {
     echo "baton: kata is installed but its daemon isn't healthy - run 'kata health' to check" >&2
     exit 1
   }
-}
-
-# session_has_transcript <dir> <session-id> -> true if Claude has ever
-# actually written a transcript for <session-id> under <dir>'s project
-# directory. A role's --session-id is minted at `baton start` for all 6
-# roles up front, but Claude only creates ~/.claude/projects/<encoded
-# dir>/<session-id>.jsonl once that session gets its first real turn - a
-# role that never got dispatched to before the instance stopped has a
-# recorded id with no file behind it, and `--resume` on that id fails with
-# "No conversation found". Claude encodes a project's absolute path by
-# replacing every non-alphanumeric character with '-' (verified
-# empirically against ~/.claude/projects - not documented anywhere).
-session_has_transcript() {
-  local dir="$1" id="$2" config_dir="$3" encoded
-  encoded="$(printf '%s' "$dir" | tr -c 'a-zA-Z0-9' '-')"
-  [ -f "${config_dir:-$HOME/.claude}/projects/$encoded/$id.jsonl" ]
 }
 
 # Resolves REF (a slug from an instance's `slug` file, a bare instance uuid,
@@ -203,69 +212,474 @@ resolve_setting() {
   val="$(config_get "$GLOBAL_CONF" "default.${key}")"; [ -n "$val" ] && { echo "$val"; return; }
 
   case "$key" in
+  tool) echo "claude" ;;
   model) echo "sonnet" ;;
   effort) echo "high" ;;
   esac
 }
 
-resolve_config_dir() {
-  local configured_dir
-  configured_dir="$(resolve_setting "$1" "$2" config_dir)"
-  case "$configured_dir" in
-  "") echo "" ;;
-  "~") echo "$HOME" ;;
-  "~/"*) echo "$HOME/${configured_dir#\~/}" ;;
-  /*) echo "$configured_dir" ;;
-  *) echo "baton: $2.config_dir must be an absolute path or start with ~/: $configured_dir" >&2; return 1 ;;
+# models_for_tool <tool> -> that tool's selectable models, one per line, in
+# the order they appear in MODELS_FILE (models.json - see its own header for
+# why this is a separate, curated, user-editable file rather than free text:
+# each tool's actual valid model ids change over time and aren't discoverable
+# from any flag baton itself parses). Prints nothing if MODELS_FILE is
+# missing, isn't valid JSON, or has no entry for this tool - callers treat an
+# empty result as "nothing to offer," not an error.
+models_for_tool() {
+  python3 -c '
+import json, sys
+path, tool = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(0)
+for m in data.get(tool, []):
+    print(m)
+' "$MODELS_FILE" "$1"
+}
+
+# set_config_value <file> <key> <value> -> updates <key>=<value> in file,
+# replacing an existing "key = value" line (config_get's own match rule) or
+# appending one if there wasn't one. Used by configure_roles_interactively to
+# persist wizard edits into DIR/.baton/config, so resolve_setting (and every
+# consumer of it - spawn_pipeline_panes, `baton config`, a later wizard run)
+# picks them up with no other code path changes.
+set_config_value() {
+  local file="$1" key="$2" value="$3"
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  local tmp
+  tmp="$(mktemp)"
+  awk -v k="$key" -v v="$value" '
+    BEGIN { done = 0 }
+    match($0, "^[[:space:]]*" k "[[:space:]]*=") {
+      print k "=" v
+      done = 1
+      next
+    }
+    { print }
+    END { if (!done) print k "=" v }
+  ' "$file" >"$tmp"
+  mv "$tmp" "$file"
+}
+
+TUI_TOOL_OPTIONS=(claude codex omp)
+TUI_EFFORT_OPTIONS=(low medium high xhigh max)
+
+# tui_cycle <current> <step: 1|-1> <option...> -> the next/previous value in
+# the option list after <current>, wrapping around. Falls back to the first
+# option if <current> isn't one of them (e.g. a hand-edited model-ish string
+# sitting in a tool/effort slot).
+tui_cycle() {
+  local current="$1" step="$2"
+  shift 2
+  local opts=("$@") i n
+  n="${#opts[@]}"
+  for i in "${!opts[@]}"; do
+    if [ "${opts[$i]}" = "$current" ]; then
+      echo "${opts[$(((i + step + n) % n))]}"
+      return
+    fi
+  done
+  echo "${opts[0]}"
+}
+
+# tui_read_key -> blocks for one keypress on /dev/tty and prints one of:
+# UP DOWN LEFT RIGHT TAB ENTER QUIT SAVE (or nothing, for a key with no
+# meaning here). Arrow keys arrive as a 3-byte escape sequence
+# (ESC [ A/B/C/D); a lone ESC (nothing follows within the short read
+# timeout) is treated the same as 'q'.
+tui_read_key() {
+  local k1 k2 k3
+  # -d '' (empty/NUL delimiter, not the default newline) on every read here:
+  # bash's `read -n1` otherwise special-cases a newline byte as end-of-line
+  # and silently returns an empty variable for it instead of the literal
+  # character - which would make Enter (translated \r -> \n by the tty's
+  # icrnl) unreadable as ENTER below.
+  IFS= read -rsn1 -d '' k1 </dev/tty || { echo QUIT; return; }
+  case "$k1" in
+  $'\x1b')
+    # bash 3.2 (macOS's stock bash) only accepts whole-second -t values, so
+    # this can't poll with a short fractional timeout - an arrow key's
+    # ESC [ X follow-up bytes arrive within milliseconds, well inside this
+    # 1s window, so real arrow presses stay snappy; a lone ESC (nothing
+    # follows) just waits out the second before falling through to QUIT.
+    IFS= read -rsn1 -d '' -t 1 k2 </dev/tty
+    if [ "$k2" = "[" ]; then
+      IFS= read -rsn1 -d '' -t 1 k3 </dev/tty
+      case "$k3" in
+      A) echo UP ;;
+      B) echo DOWN ;;
+      C) echo RIGHT ;;
+      D) echo LEFT ;;
+      *) echo "" ;;
+      esac
+    else
+      echo QUIT
+    fi
+    ;;
+  $'\t') echo TAB ;;
+  $'\r' | $'\n') echo ENTER ;;
+  $'\x03') echo QUIT ;; # Ctrl-C - raw mode leaves this as a plain byte
+  q | Q) echo QUIT ;;
+  s | S) echo SAVE ;;
+  *) echo "" ;;
   esac
 }
 
-resolve_accounts() {
-  local dir="$1" configured_mode
-  configured_mode="$(config_get "$dir/.baton/config" accounts)"
-  [ -n "$configured_mode" ] || configured_mode="$(config_get "$GLOBAL_CONF" accounts)"
-  echo "${configured_mode:-two}"
+TUI_ROLE_W=11
+TUI_TOOL_W=8
+TUI_MODEL_W=14
+TUI_EFFORT_W=6
+
+# tui_paint <outvar> <sgr> <text> -> like paint, but assigns into <outvar>
+# (via printf -v, which - unlike `paint`'s own "$(...)" call sites elsewhere
+# in this file - never forks a subshell to do it. tui_draw calls something
+# in this family for every cell of every row on every single keystroke; with
+# the plain `$(...)`-returning versions that redraw was ~100 subshell forks
+# per frame (paint/tui_cell/tui_hline/the sgr lookups all nest inside
+# command substitutions), which was slow enough on a real terminal to make
+# typing in the inline model editor feel laggy. Building the whole frame in
+# this process and emitting it with one final printf - see tui_draw - fixes
+# that.
+tui_paint() {
+  local __out="$1" sgr="$2" text="$3"
+  if use_color; then
+    printf -v "$__out" '\033[%sm%s\033[0m' "$sgr" "$text"
+  else
+    printf -v "$__out" '%s' "$text"
+  fi
 }
 
-profile_config_dir() {
-  case "$1" in
-  aiisciced12) echo "" ;;
-  sundayisaacandy) echo "$HOME/.claude-secondary" ;;
-  *) echo "baton: unknown profile '$1' (use aiisciced12 or sundayisaacandy)" >&2; return 1 ;;
+# repeat_char_into <outvar> <char> <n> -> <char> repeated n times, into
+# <outvar>. A plain bash loop, not `printf '%*s' n '' | tr ' ' "$char"` - tr
+# operates byte-by-byte, which mangles the multi-byte UTF-8 box-drawing
+# characters this is built for.
+repeat_char_into() {
+  local __out="$1" char="$2" n="$3" out="" i
+  for ((i = 0; i < n; i++)); do out+="$char"; done
+  printf -v "$__out" '%s' "$out"
+}
+
+# tui_hline_into <outvar> <left> <mid> <right> -> a full-width
+# border/separator row, into <outvar>, built from those three junction
+# characters and TUI_*_W column widths, e.g. tui_hline_into out ┌ ┬ ┐ for
+# the top border.
+tui_hline_into() {
+  local __out="$1" left="$2" mid="$3" right="$4" r_role r_tool r_model r_effort raw colored
+  repeat_char_into r_role ─ $((TUI_ROLE_W + 2))
+  repeat_char_into r_tool ─ $((TUI_TOOL_W + 2))
+  repeat_char_into r_model ─ $((TUI_MODEL_W + 2))
+  repeat_char_into r_effort ─ $((TUI_EFFORT_W + 2))
+  raw="${left}${r_role}${mid}${r_tool}${mid}${r_model}${mid}${r_effort}${right}"
+  tui_paint colored 90 "$raw"
+  printf -v "$__out" '%s\n' "$colored"
+}
+
+# tui_tool_sgr_into/tui_effort_sgr_into <outvar> <value> -> the SGR code
+# paint should color that value with, into <outvar> - same "small lookup"
+# convention as instance_state_sgr/agent_status_sgr above, just indirect.
+tui_tool_sgr_into() {
+  case "$2" in
+  claude) printf -v "$1" 36 ;; # cyan
+  codex) printf -v "$1" 35 ;;  # magenta
+  omp) printf -v "$1" 33 ;;    # yellow
+  *) printf -v "$1" 37 ;;
   esac
 }
 
-link_session_transcript() {
-  local dir="$1" instance="$2" session_id="$3" encoded transcript_dir profile_dir project_dir item source target
-  encoded="$(printf '%s' "$dir" | tr -c 'a-zA-Z0-9' '-')"
-  transcript_dir="$HOME/.baton/transcripts/$instance"
-  mkdir -p "$transcript_dir/$session_id"
-  for profile_dir in "$HOME/.claude" "$HOME/.claude-secondary"; do
-    project_dir="$profile_dir/projects/$encoded"
-    mkdir -p "$project_dir"
-    for item in "$session_id.jsonl" "$session_id"; do
-      source="$project_dir/$item"
-      target="$transcript_dir/$item"
-      if [ -L "$source" ] && [ "$(readlink "$source")" = "$target" ]; then
-        continue
-      fi
-      if [ -e "$source" ] || [ -L "$source" ]; then
-        echo "baton: transcript path already exists: $source" >&2
-        return 1
-      fi
-      ln -s "$target" "$source"
-    done
+tui_effort_sgr_into() {
+  case "$2" in
+  low) printf -v "$1" 32 ;;     # green
+  medium) printf -v "$1" 36 ;;  # cyan
+  high) printf -v "$1" 33 ;;    # yellow
+  xhigh) printf -v "$1" 31 ;;   # red
+  max) printf -v "$1" "1;31" ;; # bold red
+  *) printf -v "$1" 37 ;;
+  esac
+}
+
+# tui_cell_into <outvar> <text> <width> <focused> <value_sgr> -> that text
+# padded to width, into <outvar>, in reverse-video-bold if focused
+# (regardless of value_sgr - the highlight needs to win, not blend with a
+# coincidentally similar color), otherwise painted with value_sgr.
+tui_cell_into() {
+  local __out="$1" text="$2" width="$3" focused="$4" sgr="$5" padded colored
+  printf -v padded "%-${width}s" "$text"
+  if [ "$focused" = 1 ]; then
+    tui_paint colored "1;7" " $padded "
+    printf -v "$__out" '%s' "$colored"
+  else
+    tui_paint colored "$sgr" "$padded"
+    printf -v "$__out" ' %s ' "$colored"
+  fi
+}
+
+# tui_draw <dir> <row> <col> -> redraws the whole config screen inside a
+# box: one line per role, its tool/model/effort in three color-coded
+# columns, the (row, col) cell highlighted in reverse video. col: 0=tool
+# 1=model 2=effort - all three are curated enums now (tool/effort from a
+# fixed list, model from models.json - see configure_roles_interactively),
+# not free text, so there's nothing here that ever needs a text cursor.
+#
+# Builds the entire frame in $frame and writes it with one final printf,
+# rather than a stream of small printfs each fed by a "$(...)" call (see
+# tui_paint's comment for why that was slow) - this function forks nothing.
+#
+# Moves the cursor home and overwrites in place (\033[H) rather than
+# clearing the screen first (\033[2J) - every line here is a fixed width
+# regardless of which values/cell are current, so an overwrite never leaves
+# stale characters behind. Clearing on every keystroke instead blanks the
+# whole screen for one frame before the redraw lands, which reads as a
+# visible flicker on a real terminal; the one-time \033[2J before the loop
+# starts (see configure_roles_interactively) is enough.
+tui_draw() {
+  local dir="$1" row="$2" col="$3"
+  local frame title sub line b
+  tui_paint title 1 baton
+  tui_paint sub 90 "· configure roles for $dir"
+  frame=$'\033[H'
+  frame+=" $title $sub"$'\n\n'
+
+  tui_hline_into line ┌ ┬ ┐
+  frame+="$line"
+  tui_paint b 90 │
+  local h_role h_tool h_model h_effort
+  tui_cell_into h_role ROLE "$TUI_ROLE_W" 0 1
+  tui_cell_into h_tool TOOL "$TUI_TOOL_W" 0 1
+  tui_cell_into h_model MODEL "$TUI_MODEL_W" 0 1
+  tui_cell_into h_effort EFFORT "$TUI_EFFORT_W" 0 1
+  frame+="${b}${h_role}${b}${h_tool}${b}${h_model}${b}${h_effort}${b}"$'\n'
+  tui_hline_into line ├ ┼ ┤
+  frame+="$line"
+
+  local i role role_c tool_c model_c effort_c sgr focused
+  for i in "${!ROLES[@]}"; do
+    role="${ROLES[$i]}"
+    tui_cell_into role_c "$role" "$TUI_ROLE_W" 0 1
+
+    focused=0; [ "$i" = "$row" ] && [ "$col" = 0 ] && focused=1
+    tui_tool_sgr_into sgr "${TUI_TOOL[$i]}"
+    tui_cell_into tool_c "${TUI_TOOL[$i]}" "$TUI_TOOL_W" "$focused" "$sgr"
+
+    focused=0; [ "$i" = "$row" ] && [ "$col" = 1 ] && focused=1
+    tui_cell_into model_c "${TUI_MODEL[$i]}" "$TUI_MODEL_W" "$focused" 37
+
+    focused=0; [ "$i" = "$row" ] && [ "$col" = 2 ] && focused=1
+    tui_effort_sgr_into sgr "${TUI_EFFORT[$i]}"
+    tui_cell_into effort_c "${TUI_EFFORT[$i]}" "$TUI_EFFORT_W" "$focused" "$sgr"
+
+    frame+="${b}${role_c}${b}${tool_c}${b}${model_c}${b}${effort_c}${b}"$'\n'
+  done
+  tui_hline_into line └ ┴ ┘
+  frame+="$line"
+
+  local k_ud k_tab k_lr k_s k_q
+  tui_paint k_ud 1 "↑/↓"
+  tui_paint k_tab 1 Tab
+  tui_paint k_lr 1 "←/→"
+  tui_paint k_s 1 s
+  tui_paint k_q 1 q
+  frame+=$'\n  '"${k_ud} role   ${k_tab} field   ${k_lr} change   ${k_s} save & launch   ${k_q} quit without launching"$'\n'
+
+  # %s, not %b: frame can contain the project directory path verbatim - %b
+  # would reinterpret any backslash sequence inside it as an escape instead
+  # of printing it as-is. Every actual escape/newline above is already a
+  # real byte (built via $'...' or a printf format string, never a literal
+  # backslash-n from a plain double-quoted append), so plain %s is enough.
+  printf '%s' "$frame"
+}
+
+# sync_model_to_tool <row> -> if TUI_MODEL[row] isn't one of TUI_TOOL[row]'s
+# selectable models (models.json), snaps it to that tool's first model.
+# Called whenever a row's tool changes, since a model string that belonged
+# to the *previous* tool (e.g. "sonnet" after switching a role from claude
+# to codex) isn't just unselected, it's invalid - codex has no model called
+# "sonnet". Leaves TUI_MODEL alone if models.json has nothing for the new
+# tool (nothing to snap to) or if the current value happens to already be
+# valid for it.
+sync_model_to_tool() {
+  local row="$1"
+  # tool/cur can't share this "local" statement with row - see
+  # nudge_conductor's comment on why a same-statement dependent assignment
+  # is unsafe under `set -u`. (This one previously "worked" anyway only
+  # because configure_roles_interactively's own loop variable is also
+  # named "row" and happened to already hold the right value - fixed here
+  # rather than relying on that coincidence.)
+  local tool="${TUI_TOOL[$row]}" cur="${TUI_MODEL[$row]}"
+  local -a opts=()
+  while IFS= read -r m; do opts+=("$m"); done < <(models_for_tool "$tool")
+  [ "${#opts[@]}" -eq 0 ] && return
+  local m
+  for m in "${opts[@]}"; do
+    [ "$m" = "$cur" ] && return
+  done
+  TUI_MODEL[$row]="${opts[0]}"
+}
+
+# configure_roles_interactively <dir> -> a full-screen arrow-key TUI over
+# each role's tool/model/effort, seeded from whatever's currently resolved
+# (for `baton start` that's whatever baton.conf says; for `baton resume`
+# it's whatever was actually used last time, since a prior save already
+# lives in DIR/.baton/config and resolve_setting reads that first).
+#
+# 's' persists every role's current value to DIR/.baton/config and returns 0
+# (proceed to launch). 'q'/Ctrl-C/a bare Escape abandon the wizard entirely
+# and return 1 - the caller (cmd_start/cmd_resume) must not launch anything
+# in that case, since "quit" here means the whole `baton start`/`resume`
+# invocation, not just "launch with what was already there".
+#
+# Returns 0 without drawing anything when there's no controlling terminal,
+# e.g. under a test harness or CI - there's nothing to cancel, so that's a
+# pass-through, not a quit.
+configure_roles_interactively() {
+  local dir="$1"
+  [ -t 0 ] && [ -e /dev/tty ] || return 0
+
+  local i role
+  local -a TUI_TOOL TUI_MODEL TUI_EFFORT
+  for i in "${!ROLES[@]}"; do
+    role="${ROLES[$i]}"
+    TUI_TOOL[$i]="$(resolve_setting "$dir" "$role" tool)"
+    TUI_MODEL[$i]="$(resolve_setting "$dir" "$role" model)"
+    TUI_EFFORT[$i]="$(resolve_setting "$dir" "$role" effort)"
+  done
+
+  local old_stty
+  old_stty="$(stty -g </dev/tty)" || return 0
+  # -icanon/-echo (cbreak, not full raw): keystrokes arrive one at a time
+  # unechoed, but ISIG/OPOST stay on, so a stray Ctrl-C during the trap
+  # window still behaves like Ctrl-C everywhere else instead of leaving the
+  # terminal in a half-raw state if this function exits unexpectedly.
+  # \033[?25l/h hide/show the terminal's own cursor - otherwise it visibly
+  # jumps to wherever the last printf in tui_draw left it (the last cell of
+  # the last row) on every single keystroke, which reads as the cursor
+  # "dancing" across the screen even once the flicker from a full clear
+  # (see tui_draw's comment) is gone.
+  trap 'stty "$old_stty" </dev/tty 2>/dev/null; printf "\033[H\033[2J\033[?25h"' RETURN
+  # A SIGINT that actually reaches the process (ISIG is still on - see
+  # above) kills the script outright rather than returning from this
+  # function normally, so the RETURN trap above wouldn't fire - without this,
+  # a real Ctrl-C here would leave the user's terminal cursor invisible.
+  trap 'stty "$old_stty" </dev/tty 2>/dev/null; printf "\033[H\033[2J\033[?25h"; exit 130' INT
+  stty -echo -icanon min 1 time 0 </dev/tty
+  printf '\033[2J\033[?25l'
+
+  local row=0 col=0 n="${#ROLES[@]}" key
+  while :; do
+    tui_draw "$dir" "$row" "$col"
+    key="$(tui_read_key)"
+    case "$key" in
+    UP) row=$(((row - 1 + n) % n)) ;;
+    DOWN) row=$(((row + 1) % n)) ;;
+    TAB) col=$(((col + 1) % 3)) ;;
+    LEFT)
+      case "$col" in
+      0)
+        TUI_TOOL[$row]="$(tui_cycle "${TUI_TOOL[$row]}" -1 "${TUI_TOOL_OPTIONS[@]}")"
+        sync_model_to_tool "$row"
+        ;;
+      1)
+        local -a model_opts=()
+        while IFS= read -r m; do model_opts+=("$m"); done < <(models_for_tool "${TUI_TOOL[$row]}")
+        [ "${#model_opts[@]}" -gt 0 ] && TUI_MODEL[$row]="$(tui_cycle "${TUI_MODEL[$row]}" -1 "${model_opts[@]}")"
+        ;;
+      2) TUI_EFFORT[$row]="$(tui_cycle "${TUI_EFFORT[$row]}" -1 "${TUI_EFFORT_OPTIONS[@]}")" ;;
+      esac
+      ;;
+    RIGHT)
+      case "$col" in
+      0)
+        TUI_TOOL[$row]="$(tui_cycle "${TUI_TOOL[$row]}" 1 "${TUI_TOOL_OPTIONS[@]}")"
+        sync_model_to_tool "$row"
+        ;;
+      1)
+        local -a model_opts=()
+        while IFS= read -r m; do model_opts+=("$m"); done < <(models_for_tool "${TUI_TOOL[$row]}")
+        [ "${#model_opts[@]}" -gt 0 ] && TUI_MODEL[$row]="$(tui_cycle "${TUI_MODEL[$row]}" 1 "${model_opts[@]}")"
+        ;;
+      2) TUI_EFFORT[$row]="$(tui_cycle "${TUI_EFFORT[$row]}" 1 "${TUI_EFFORT_OPTIONS[@]}")" ;;
+      esac
+      ;;
+    SAVE)
+      local project_conf="$dir/.baton/config"
+      for i in "${!ROLES[@]}"; do
+        role="${ROLES[$i]}"
+        set_config_value "$project_conf" "$role.tool" "${TUI_TOOL[$i]}"
+        set_config_value "$project_conf" "$role.model" "${TUI_MODEL[$i]}"
+        set_config_value "$project_conf" "$role.effort" "${TUI_EFFORT[$i]}"
+      done
+      return 0
+      ;;
+    QUIT) return 1 ;;
+    esac
   done
 }
 
+# tool_launch_args <tool> <model> <effort> <prompt_file> -> prints one
+# argument per line (the tail args after `herdr agent start ... --kind
+# <tool> --pane <id> -- `), adapted to that tool's actual CLI surface:
+#
+#   claude: mints its own session but takes a real system-prompt file, so
+#           the persona loads before the pane's first turn.
+#   codex:  model/effort are config overrides (-c key=value), not flags;
+#           no system-prompt flag, so the persona is typed in as the pane's
+#           first message instead (see spawn_pipeline_panes phase 2).
+#   omp:    has --model/--thinking flags matching baton's own vocabulary,
+#           but --append-system-prompt takes its value inline rather than a
+#           file, and personas run tens of KB - typed as the first message
+#           for the same reason as codex.
+#
+# None of the three get `--resume`/`--session-id`/equivalent: baton no
+# longer tries to reconnect a role to its previous underlying conversation
+# (that was Claude-only anyway, and broke the moment a role's tool/model
+# changed between runs). Continuity across `baton stop` + `baton resume` -
+# including switching a role to a different tool - comes from the kata
+# backlog and .baton/ state instead, which every tool can read the same way.
+tool_launch_args() {
+  local tool="$1" model="$2" effort="$3" prompt_file="$4"
+  case "$tool" in
+  claude)
+    printf '%s\n' --model "$model" --effort "$effort" --append-system-prompt-file "$prompt_file"
+    ;;
+  codex)
+    printf '%s\n' -c "model=$model" -c "model_reasoning_effort=$effort"
+    ;;
+  omp)
+    printf '%s\n' --model "$model" --thinking "$effort"
+    ;;
+  *)
+    echo "baton: unknown tool '$tool' (use claude, codex, or omp)" >&2
+    return 1
+    ;;
+  esac
+}
+
+# tool_needs_typed_persona <tool> -> true if that tool has no system-prompt
+# launch flag, so spawn_pipeline_panes must type the persona in as the
+# pane's first message instead.
+tool_needs_typed_persona() {
+  case "$1" in
+  claude) return 1 ;;
+  *) return 0 ;;
+  esac
+}
+
+# prepare_profile <dir> -> registers baton's Stop hook globally in Claude
+# Code's own settings and pre-accepts dir's trust dialog. Claude-only: it's
+# the sole supported tool with a Stop-hook mechanism (used here only for
+# the "nudge a stalled role that forgot to call baton-handoff" safety net -
+# see hooks/baton-dispatch.sh - since baton-handoff itself now does the
+# actual pipeline forwarding for every tool). Only called for roles
+# resolved to tool=claude.
 prepare_profile() {
-  local dir="$1" config_dir="$2"
-  python3 - "$dir" "${config_dir:-$HOME/.claude}" "$ROOT_DIR/hooks/baton-dispatch.sh" \
-    "$ROOT_DIR/hooks/baton-session-start.sh" "$([ -n "$config_dir" ] && echo 1 || echo 0)" <<'PYEOF'
+  local dir="$1"
+  python3 - "$dir" "$HOME/.claude" "$ROOT_DIR/hooks/baton-dispatch.sh" <<'PYEOF'
 import json, os, sys
 
-project_dir, config_dir, stop_hook_command, session_start_hook_command, custom_profile = sys.argv[1:]
-state_file = os.path.join(config_dir, ".claude.json") if custom_profile == "1" else os.path.expanduser("~/.claude.json")
+project_dir, config_dir, stop_hook_command = sys.argv[1:]
+state_file = os.path.expanduser("~/.claude.json")
 settings_file = os.path.join(config_dir, "settings.json")
 
 for file_path in (state_file, settings_file):
@@ -285,10 +699,6 @@ for file_path in (state_file, settings_file):
         stop_hooks = hooks.setdefault("Stop", [])
         if not any(hook.get("command") == stop_hook_command for group in stop_hooks for hook in group.get("hooks", [])):
             stop_hooks.append({"matcher": "", "hooks": [{"type": "command", "command": stop_hook_command, "timeout": 10}]})
-            changed = True
-        session_start_hooks = hooks.setdefault("SessionStart", [])
-        if not any(hook.get("command") == session_start_hook_command for group in session_start_hooks for hook in group.get("hooks", [])):
-            session_start_hooks.append({"matcher": "clear", "hooks": [{"type": "command", "command": session_start_hook_command, "timeout": 10}]})
             changed = True
     if not changed:
         continue
@@ -374,70 +784,45 @@ layout_split_plan() {
 # ("1" if we created a whole new workspace, so `stop` should close it
 # outright; "0" if we only added a tab to the caller's workspace, so `stop`
 # must close just that tab and leave the rest of the workspace alone).
-# $4 is "start" (mint a fresh --session-id per role into sessions.map) or
-# "resume" (read sessions.map and --resume each one). Prints
-# "<workspace_id> <tab_id>".
+# Every launch is a fresh session for whatever tool/model/effort that role
+# currently resolves to (see tool_launch_args) - there's no cross-run
+# session-id/--resume plumbing to keep in sync, since baton doesn't try to
+# reconnect a role to its previous conversation (see baton.conf's header).
+# Prints "<workspace_id> <tab_id>".
 spawn_pipeline_panes() {
-  local dir="$1" name="$2" marker_dir="$3" mode="$4" accounts="${5:-two}" profile="${6:-}"
-  local sessions_file="$marker_dir/sessions.map"
-  local profiles_file="$marker_dir/profiles.map"
+  local dir="$1" name="$2" marker_dir="$3"
   local agents_file="$marker_dir/agents.map"
   : >"$agents_file"
-  [ "$mode" = "start" ] && : >"$sessions_file"
-  [ "$mode" = "start" ] && : >"$profiles_file"
 
   local instance
   instance="$(basename "$marker_dir")"
-  if [ "$mode" = "start" ]; then
-    [ ! -e "$HOME/.baton/transcripts/$instance" ] || {
-      echo "baton: transcript directory already exists for '$instance'" >&2
-      return 1
-    }
-    mkdir -p "$HOME/.baton/transcripts/$instance"
-  fi
 
   local layout
   layout="$(resolve_layout "$dir")"
 
   local role idx=0 pane_id
-  local pane_ids=() agent_names=() session_flag_names=() session_ids=() models=() efforts=() config_dirs=()
+  local pane_ids=() agent_names=() models=() efforts=() tools=()
   local workspace_id="" tab_id="" root_pane_id="" owns_workspace=""
   # Phase 1: create every pane and record what each role needs to launch
   # with. Splits have to stay sequential - the grid plan (layout_split_plan)
   # splits earlier panes to make later ones, so pane N+1 can depend on pane
-  # N already existing. Nothing here waits on a `claude` process, so it's
+  # N already existing. Nothing here waits on an agent process, so it's
   # fast regardless.
   for role in "${ROLES[@]}"; do
     idx=$((idx + 1))
 
     models[$idx]="$(resolve_setting "$dir" "$role" model)"
     efforts[$idx]="$(resolve_setting "$dir" "$role" effort)"
-    if [ -n "$profile" ]; then
-      config_dirs[$idx]="$(profile_config_dir "$profile")"
-    elif [ "$mode" = "resume" ]; then
-      config_dirs[$idx]=""
-      if [ -f "$profiles_file" ]; then
-        config_dirs[$idx]="$(awk -F'\t' -v r="$role" '$1==r{print $2}' "$profiles_file")"
-        [ "${config_dirs[$idx]}" = "-" ] && config_dirs[$idx]=""
-      fi
-    elif [ "$accounts" = "one" ]; then
-      config_dirs[$idx]=""
-    else
-      config_dirs[$idx]="$(resolve_config_dir "$dir" "$role")"
+    tools[$idx]="$(resolve_setting "$dir" "$role" tool)"
+    if [ "${tools[$idx]}" = "claude" ]; then
+      prepare_profile "$dir"
     fi
-    if [ "$mode" = "start" ]; then
-      printf '%s\t%s\n' "$role" "${config_dirs[$idx]:--}" >>"$profiles_file"
-    fi
-    prepare_profile "$dir" "${config_dirs[$idx]}"
 
     local env_flags=(--env "PATH=$BIN_DIR:$PATH" --env "BATON_ROOT=$dir" \
       --env "BATON_MARKER_DIR=$marker_dir" --env "BATON_ROLE=$role")
-    if [ -n "${config_dirs[$idx]}" ]; then
-      env_flags+=(--env "CLAUDE_CONFIG_DIR=${config_dirs[$idx]}")
-    fi
     # z.ai GLM models need the same ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
     # override the `zai` shell function applies for interactive use - baton
-    # calls `claude` directly (never through that function), so it has to
+    # calls the tool directly (never through that function), so it has to
     # set them itself as pane env instead.
     case "${models[$idx]}" in
     glm-*)
@@ -487,52 +872,32 @@ spawn_pipeline_panes() {
 
     agent_names[$idx]="${role}-${instance}"
     printf '%s\t%s\n' "$role" "${agent_names[$idx]}" >>"$agents_file"
-
-    if [ "$mode" = "start" ]; then
-      session_ids[$idx]="$(uuidgen | tr 'A-Z' 'a-z')"
-      printf '%s\t%s\n' "$role" "${session_ids[$idx]}" >>"$sessions_file"
-      link_session_transcript "$dir" "$instance" "${session_ids[$idx]}"
-      session_flag_names[$idx]="--session-id"
-    else
-      session_ids[$idx]="$(awk -F'\t' -v r="$role" '$1==r{print $2}' "$sessions_file")"
-      [ -n "${session_ids[$idx]}" ] || {
-        echo "baton: no recorded session id for '$role' in $sessions_file - this instance predates session tracking and can't be auto-resumed" >&2
-        exit 1
-      }
-      if session_has_transcript "$dir" "${session_ids[$idx]}" "${config_dirs[$idx]}"; then
-        session_flag_names[$idx]="--resume"
-      else
-        # Never dispatched to - mint it fresh under the same recorded id
-        # instead of resuming, so sessions.map still matches once this
-        # role's first real turn lands.
-        session_flag_names[$idx]="--session-id"
-      fi
-    fi
   done
 
   echo "$owns_workspace" >"$marker_dir/owns_workspace"
 
-  # Phase 2: launch all 6 `claude` processes at once instead of one at a
+  # Phase 2: launch all 6 agent processes at once instead of one at a
   # time. None of them depend on each other - the slow part is each
-  # `claude` process's own startup (model/auth init), not anything herdr
-  # does - so waiting for role N to finish before even starting role N+1
-  # was pure serialized dead time. Total wall time drops to roughly the
-  # slowest single launch instead of the sum of all six.
+  # process's own startup (model/auth init), not anything herdr does - so
+  # waiting for role N to finish before even starting role N+1 was pure
+  # serialized dead time. Total wall time drops to roughly the slowest
+  # single launch instead of the sum of all six.
   idx=0
   for role in "${ROLES[@]}"; do
     idx=$((idx + 1))
     (
       local pane_id="${pane_ids[$idx]}" agent_name="${agent_names[$idx]}"
-      local model="${models[$idx]}" effort="${efforts[$idx]}"
-      # A file, not a literal string: the persona prompts run tens of KB
-      # with quotes/backticks/code-fences throughout, and herdr's agent
-      # start rejects arguments it can't safely re-encode for the pane's
-      # shell. A non-zero exit here can mean the launch genuinely failed,
-      # or just that the agent is sitting at some other startup dialog we
-      # didn't anticipate -
-      # agents.map already has this role's name, and herdr keeps it
-      # addressable either way, so warn and let the rest of the pipeline's
-      # launches (each its own background job here) keep going.
+      local model="${models[$idx]}" effort="${efforts[$idx]}" tool="${tools[$idx]}"
+      local prompt_file="$PROMPT_DIR/$role.prompt.md"
+      local tool_args=()
+      while IFS= read -r line; do tool_args+=("$line"); done \
+        < <(tool_launch_args "$tool" "$model" "$effort" "$prompt_file")
+
+      # A non-zero exit here can mean the launch genuinely failed, or just
+      # that the agent is sitting at some other startup dialog we didn't
+      # anticipate - agents.map already has this role's name, and herdr
+      # keeps it addressable either way, so warn and let the rest of the
+      # pipeline's launches (each its own background job here) keep going.
       #
       # A pane fresh out of `herdr pane split` briefly isn't "at its
       # interactive shell prompt" yet (agent start requires that
@@ -546,9 +911,8 @@ spawn_pipeline_panes() {
       local start_json start_attempt=0
       while :; do
         start_attempt=$((start_attempt + 1))
-        start_json="$(herdr agent start "$agent_name" --kind claude --pane "$pane_id" --timeout 60000 -- \
-          "${session_flag_names[$idx]}" "${session_ids[$idx]}" --model "$model" --effort "$effort" \
-          --append-system-prompt-file "$PROMPT_DIR/$role.prompt.md" 2>&1)" && exit 0
+        start_json="$(herdr agent start "$agent_name" --kind "$tool" --pane "$pane_id" --timeout 60000 -- \
+          "${tool_args[@]}" 2>&1)" && break
         if [ "$(herdr_json "$start_json" error.code)" = "agent_pane_busy" ] && [ "$start_attempt" -lt 15 ]; then
           sleep 1
           continue
@@ -557,11 +921,57 @@ spawn_pipeline_panes() {
         echo "baton: warning - '$role' (pane $pane_id) didn't come up ready; check its pane" >&2
         exit 1
       done
+
+      # Tools with no system-prompt launch flag (see tool_needs_typed_persona)
+      # get their persona typed in as the pane's first message instead -
+      # `herdr agent prompt` already has to handle arbitrary multi-line,
+      # special-character payloads for pipeline handoffs, so it's a proven
+      # path for a tens-of-KB persona file too.
+      if tool_needs_typed_persona "$tool"; then
+        herdr agent prompt "$agent_name" "$(cat "$prompt_file")" >/dev/null 2>&1
+      fi
     ) &
   done
   wait
 
   echo "$workspace_id $tab_id"
+}
+
+# nudge_conductor <marker_dir> -> types a plain-text nudge into the
+# conductor pane telling it to resolve and continue whatever's already in
+# kata, rather than wait for a human to type something first.
+#
+# Every role's prompt is written to reconstruct its state from kata instead
+# of conversation history (see prompts/*.prompt.md's "Which backlog?"/Inputs
+# sections), so the durable side of a resume already works regardless of
+# which tool/model a role comes back up under. But nothing about *launching*
+# a pane is itself a turn: a claude-tool pane's persona loads via a real
+# system-prompt flag (no message, so the pane just sits idle), and a
+# codex/omp-tool pane's first typed message is its own persona file, not a
+# task. Without this, "the same workflow resumes" would depend on the human
+# remembering to type something like "continue" into the conductor pane
+# after every `baton resume` - this makes that automatic.
+#
+# Deliberately phrased to be safe whether or not a backlog actually exists
+# yet: `baton start` -> immediate `baton stop` before ever giving the
+# conductor a goal -> `baton resume` is a real, if unusual, sequence, and
+# this nudge shouldn't confuse a conductor that has nothing to resolve.
+nudge_conductor() {
+  local marker_dir="$1"
+  # A dependent assignment ("agents_file=$marker_dir/...") can't share the
+  # same `local` statement as the variable it depends on - under `set -u`,
+  # bash evaluates every RHS in a `local a=X b=$a` statement before either
+  # name actually becomes local, so `$a` there resolves against whatever
+  # (if anything) already has that name in the *caller's* scope, not the
+  # value just assigned - silently using stale/wrong data if a like-named
+  # variable happens to exist there, or a flat "unbound variable" if not.
+  local agents_file="$marker_dir/agents.map" agent_name
+  [ -f "$agents_file" ] || return 0
+  agent_name="$(awk -F'\t' '$1=="conductor"{print $2}' "$agents_file")"
+  [ -n "$agent_name" ] || return 0
+  herdr agent prompt "$agent_name" \
+    'Resuming this workspace - no new goal from me. If a backlog is already in flight, resolve which one applies (see "Which backlog?") and continue dispatching from wherever it left off. If nothing has been started yet, wait for a goal.' \
+    >/dev/null 2>&1
 }
 
 attach_or_launch() {
@@ -573,44 +983,21 @@ attach_or_launch() {
 }
 
 cmd_start() {
-  local think=0 dir="." accounts="" profile=""
+  local think=0 dir="." yes=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
     --think) think=1 ;;
-    --profile=*)
-      profile="${1#--profile=}"
-      [ -n "$profile" ] || { echo "baton: --profile requires aiisciced12 or sundayisaacandy" >&2; exit 1; }
-      ;;
-    --profile)
-      shift
-      [ "$#" -gt 0 ] || { echo "baton: --profile requires aiisciced12 or sundayisaacandy" >&2; exit 1; }
-      profile="$1"
-      ;;
-    --accounts=*) accounts="${1#--accounts=}" ;;
-    --accounts)
-      shift
-      [ "$#" -gt 0 ] || { echo "baton: --accounts requires one or two" >&2; exit 1; }
-      accounts="$1"
-      ;;
+    --yes | -y) yes=1 ;;
     -*) echo "baton: unknown start option '$1'" >&2; exit 1 ;;
     *) dir="$1" ;;
     esac
     shift
   done
   dir="$(cd "$dir" && pwd)"
-  if [ -n "$profile" ]; then
-    [ -z "$accounts" ] || { echo "baton: use --profile or --accounts, not both" >&2; exit 1; }
-    profile_config_dir "$profile" >/dev/null
+
+  if [ "$yes" != 1 ]; then
+    configure_roles_interactively "$dir" || { echo "baton: cancelled"; exit 0; }
   fi
-  [ -n "$accounts" ] || accounts="$(resolve_accounts "$dir")"
-  case "$accounts" in
-  one|two) ;;
-  *) echo "baton: accounts must be 'one' or 'two', got '$accounts'" >&2; exit 1 ;;
-  esac
-  [ -z "${CLAUDE_CONFIG_DIR:-}" ] || {
-    echo "baton: unset CLAUDE_CONFIG_DIR before starting; Baton selects each role's profile" >&2
-    exit 1
-  }
 
   for role in "${ROLES[@]}"; do
     [ -f "$PROMPT_DIR/$role.prompt.md" ] || {
@@ -643,7 +1030,7 @@ cmd_start() {
   name="$(name_for "$dir" "$instance")"
 
   local result workspace_id tab_id
-  result="$(spawn_pipeline_panes "$dir" "$name" "$marker_dir" start "$accounts" "$profile")"
+  result="$(spawn_pipeline_panes "$dir" "$name" "$marker_dir")"
   workspace_id="${result%% *}"
   tab_id="${result##* }"
   echo "$workspace_id" >"$marker_dir/workspace_id"
@@ -663,7 +1050,7 @@ cmd_attach() {
 
   local marker_dir="$DIR/.baton/s/$instance"
   local tab_id
-  tab_id="$(cat "$marker_dir/tab_id" 2>/dev/null)"
+  tab_id="$(cat "$marker_dir/tab_id" 2>/dev/null || true)"
   if [ -z "$tab_id" ] || ! herdr tab get "$tab_id" >/dev/null 2>&1; then
     echo "baton: instance '$instance' isn't running - try 'baton resume ${REF:-$instance} $DIR'" >&2
     exit 1
@@ -672,33 +1059,14 @@ cmd_attach() {
 }
 
 cmd_resume() {
-  local profile="" positional_args=()
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-    --profile=*)
-      profile="${1#--profile=}"
-      [ -n "$profile" ] || { echo "baton: --profile requires aiisciced12 or sundayisaacandy" >&2; exit 1; }
-      ;;
-    --profile)
-      shift
-      [ "$#" -gt 0 ] || { echo "baton: --profile requires aiisciced12 or sundayisaacandy" >&2; exit 1; }
-      profile="$1"
-      ;;
-    -*) echo "baton: unknown resume option '$1'" >&2; exit 1 ;;
-    *) positional_args+=("$1") ;;
+  local yes=0 args=() arg
+  for arg in "$@"; do
+    case "$arg" in
+    --yes | -y) yes=1 ;;
+    *) args+=("$arg") ;;
     esac
-    shift
   done
-  [ -z "$profile" ] || profile_config_dir "$profile" >/dev/null
-  [ -z "${CLAUDE_CONFIG_DIR:-}" ] || {
-    echo "baton: unset CLAUDE_CONFIG_DIR before resuming; Baton restores each role's saved profile" >&2
-    exit 1
-  }
-  if [ "${#positional_args[@]}" -eq 0 ]; then
-    parse_ref_dir_args
-  else
-    parse_ref_dir_args "${positional_args[@]}"
-  fi
+  parse_ref_dir_args "${args[@]+"${args[@]}"}"
   local instance
   instance="$(resolve_instance "$DIR" "$REF")" || exit 1
 
@@ -707,51 +1075,26 @@ cmd_resume() {
   name="$(name_for "$DIR" "$instance")"
 
   local existing_tab
-  existing_tab="$(cat "$marker_dir/tab_id" 2>/dev/null)"
+  existing_tab="$(cat "$marker_dir/tab_id" 2>/dev/null || true)"
   if [ -n "$existing_tab" ] && herdr tab get "$existing_tab" >/dev/null 2>&1; then
-    [ -z "$profile" ] || { echo "baton: stop instance '$instance' before switching profiles" >&2; exit 1; }
     echo "baton: instance '$instance' is already running - attaching instead of resuming"
     attach_or_launch "$existing_tab"
     return $?
   fi
 
-  [ -f "$marker_dir/sessions.map" ] || {
-    echo "baton: $marker_dir has no sessions.map - this instance predates session tracking and can't be auto-resumed" >&2
-    exit 1
-  }
-
-  if [ -n "$profile" ]; then
-    local role session_id previous_dir selected_dir
-    selected_dir="$(profile_config_dir "$profile")"
-    for role in "${ROLES[@]}"; do
-      session_id="$(awk -F'\t' -v selected_role="$role" '$1==selected_role{print $2}' "$marker_dir/sessions.map")"
-      previous_dir=""
-      if [ -f "$marker_dir/profiles.map" ]; then
-        previous_dir="$(awk -F'\t' -v selected_role="$role" '$1==selected_role{print $2}' "$marker_dir/profiles.map")"
-        [ "$previous_dir" = "-" ] && previous_dir=""
-      fi
-      if [ -n "$session_id" ] && session_has_transcript "$DIR" "$session_id" "$previous_dir" && ! session_has_transcript "$DIR" "$session_id" "$selected_dir"; then
-        echo "baton: '$role' has a transcript in its previous profile but not '$profile'; refusing to start a fresh conversation" >&2
-        exit 1
-      fi
-    done
+  if [ "$yes" != 1 ]; then
+    configure_roles_interactively "$DIR" || { echo "baton: cancelled"; exit 0; }
   fi
 
   local result workspace_id tab_id
-  result="$(spawn_pipeline_panes "$DIR" "$name" "$marker_dir" resume two "$profile")"
+  result="$(spawn_pipeline_panes "$DIR" "$name" "$marker_dir")"
   workspace_id="${result%% *}"
   tab_id="${result##* }"
   echo "$workspace_id" >"$marker_dir/workspace_id"
   echo "$tab_id" >"$marker_dir/tab_id"
-  if [ -n "$profile" ]; then
-    local role config_dir
-    config_dir="$(profile_config_dir "$profile")"
-    : >"$marker_dir/profiles.map"
-    for role in "${ROLES[@]}"; do
-      printf '%s\t%s\n' "$role" "${config_dir:--}" >>"$marker_dir/profiles.map"
-    done
-  fi
   echo "baton: resumed '$name' ($instance) for $DIR"
+
+  nudge_conductor "$marker_dir"
 
   attach_or_launch "$tab_id"
 }
@@ -763,9 +1106,9 @@ cmd_stop() {
 
   local marker_dir="$DIR/.baton/s/$instance"
   local tab_id workspace_id owns
-  tab_id="$(cat "$marker_dir/tab_id" 2>/dev/null)"
-  workspace_id="$(cat "$marker_dir/workspace_id" 2>/dev/null)"
-  owns="$(cat "$marker_dir/owns_workspace" 2>/dev/null)"
+  tab_id="$(cat "$marker_dir/tab_id" 2>/dev/null || true)"
+  workspace_id="$(cat "$marker_dir/workspace_id" 2>/dev/null || true)"
+  owns="$(cat "$marker_dir/owns_workspace" 2>/dev/null || true)"
 
   if [ "$owns" = "1" ] && [ -n "$workspace_id" ]; then
     if herdr workspace close "$workspace_id" >/dev/null 2>&1; then
@@ -828,7 +1171,7 @@ cmd_remove() {
 # convention as ls/grep --color=auto. NO_COLOR (no-color.org) and piped or
 # redirected output (scripts, tests, log capture) both stay plain.
 use_color() {
-  [ -z "${NO_COLOR:-}" ] && [ -t 1 ]
+  [ "$BATON_USE_COLOR" = 1 ]
 }
 
 # paint <sgr-code> <text> -> <text> wrapped in that SGR code, or plain if
@@ -947,22 +1290,12 @@ cmd_status() {
 cmd_config() {
   local dir="${1:-.}"
   dir="$(cd "$dir" && pwd)"
-  local role accounts
-  accounts="$(resolve_accounts "$dir")"
-  case "$accounts" in
-  one|two) ;;
-  *) echo "baton: accounts must be 'one' or 'two', got '$accounts'" >&2; exit 1 ;;
-  esac
+  local role
   for role in "${ROLES[@]}"; do
-    local config_dir
-    if [ "$accounts" = "one" ]; then
-      config_dir=""
-    else
-      config_dir="$(resolve_config_dir "$dir" "$role")"
-    fi
-    printf '%-11s model=%-10s effort=%-7s profile=%s\n' "$role" \
+    printf '%-11s tool=%-7s model=%-10s effort=%-7s\n' "$role" \
+      "$(resolve_setting "$dir" "$role" tool)" \
       "$(resolve_setting "$dir" "$role" model)" \
-      "$(resolve_setting "$dir" "$role" effort)" "${config_dir:-default}"
+      "$(resolve_setting "$dir" "$role" effort)"
   done
   printf 'layout=%s\n' "$(resolve_layout "$dir")"
 }

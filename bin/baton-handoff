@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
 # baton-handoff --status done|blocked [--route ROLE] "<payload>"
-# Signals that this role finished (or bounced) a turn of work, for
-# hooks/baton-dispatch.sh to pick up and route to the next pane.
+# Signals that this role finished (or bounced) a turn of work, records that
+# durably, and forwards the payload straight into the next role's pane -
+# tool-agnostic, since it's invoked as a plain shell command by whichever
+# agent (claude, codex, omp, ...) is running this role, unlike a Claude
+# Code Stop hook.
 #
 # If a conductor-dispatched backlog item is in flight ($BATON_MARKER_DIR
-# /conductor-run exists), the signal is a kata comment on that item - a
-# `status: <status>` line, an optional `route: <role>` line, then the
+# /conductor-run exists), the durable record is a kata comment on that item -
+# a `status: <status>` line, an optional `route: <role>` line, then the
 # payload. Otherwise (a manually-driven chain with no conductor - see
 # prompts/*.prompt.md's "Which backlog?"/routing notes) it falls back to the
 # original local marker file, $BATON_MARKER_DIR/<role>.<status>.
 #
 # This is a real pipeline handoff, not the fire-and-forget baton-msg -
 # see that script and each prompt's Ad hoc messaging section.
+#
+# hooks/baton-dispatch.sh (Claude Code-only Stop hook) no longer does any
+# forwarding - it only nags a Claude pane that ended its turn without
+# calling this script, using the timestamp this script drops in
+# .dispatch-state/ to tell whether one happened since its last check.
 set -euo pipefail
 
 status=""
@@ -59,6 +67,43 @@ payload="$*"
   exit 1
 }
 
+# macOS ships bash 3.2 (no associative arrays), so use a lookup function -
+# mirrors hooks/baton-dispatch.sh's table (kept in sync manually; there's
+# no shared lib between the two processes).
+next_role_for() {
+  case "$1" in
+  researcher) echo planner ;;
+  planner) echo principal ;;
+  principal) echo implementer ;;
+  implementer) echo reviewer ;;
+  reviewer) echo conductor ;;
+  conductor) echo researcher ;;
+  esac
+}
+
+target="${route:-$(next_role_for "$BATON_ROLE")}"
+
+# forward_payload -> types payload into $target's pane. Mirrors
+# hooks/baton-dispatch.sh's forward_payload (kept in sync manually).
+forward_payload() {
+  [ -n "$target" ] || return 0
+
+  local agents_file="$BATON_MARKER_DIR/agents.map"
+  [ -f "$agents_file" ] || return 0
+  local agent_name
+  agent_name="$(awk -F'\t' -v r="$target" '$1==r{print $2}' "$agents_file")"
+  [ -n "$agent_name" ] || return 0
+
+  local flat_payload
+  flat_payload="$(echo "$payload" | tr '\n' ' ' | sed -E 's/[[:space:]]+$//')"
+
+  # Deliberately doesn't `herdr agent focus` the target - a handoff can land
+  # while the human is looking at an unrelated pane, and stealing focus
+  # every time any role completes a turn was yanking them away from what
+  # they were actually doing.
+  herdr agent prompt "$agent_name" "$flat_payload" >/dev/null 2>&1
+}
+
 body_tail="$payload"
 [ -n "$route" ] && body_tail="route: $route
 $payload"
@@ -71,9 +116,18 @@ if [ -f "$conductor_run" ] && command -v kata >/dev/null 2>&1; then
       --body "status: $status
 $body_tail" \
       --workspace "${BATON_ROOT:-.}" --agent
+
+    forward_payload
+
+    state_dir="$BATON_MARKER_DIR/.dispatch-state"
+    mkdir -p "$state_dir"
+    date +%s >"$state_dir/$BATON_ROLE.$item_ref.last_handoff"
+    rm -f "$state_dir/$BATON_ROLE.$item_ref.stop_nudges"
+
     exit 0
   fi
 fi
 
 mkdir -p "$BATON_MARKER_DIR"
 printf '%s\n' "$body_tail" >"$BATON_MARKER_DIR/$BATON_ROLE.$status"
+forward_payload
