@@ -12,6 +12,15 @@ unset CLAUDE_CONFIG_DIR
 mkdir -p "$HOME" "$test_root/project"
 project_dir="$test_root/project"
 
+# Isolate from the shipped baton.conf: the two-account split this test
+# exercises comes from this fixture, not the repository's example config.
+cat >"$test_root/baton.conf" <<EOF
+principal.config_dir=$HOME/.claude-secondary
+implementer.config_dir=$HOME/.claude-secondary
+reviewer.config_dir=$HOME/.claude-secondary
+EOF
+export BATON_CONF="$test_root/baton.conf"
+
 herdr() {
   case "$1 $2" in
   "status --json") printf '{"server":{"status":"running"}}\n' ;;
@@ -118,7 +127,6 @@ rg -q 'refusing to start a fresh conversation' "$test_root/missing-transcript-ou
 
 printf 'accounts=one\n' >"$project_dir/.baton/config"
 "$repository_dir/bin/baton" config "$project_dir" >"$test_root/config-output"
-rg -q '^accounts=one$' "$test_root/config-output"
 [ "$(rg -c 'profile=default$' "$test_root/config-output")" -eq 6 ]
 
 : >"$test_root/pane-calls"

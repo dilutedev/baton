@@ -210,16 +210,23 @@ launch with.
 
 ### Two Claude accounts
 
-The default configuration uses your existing Claude profile for conductor,
-researcher, and planner (the default profile). Principal, implementer, and
-reviewer use `~/.claude-secondary` (the secondary profile). Sign in to the
-secondary profile once before starting a run:
+By default all six roles run under your existing Claude profile. To spread a
+run across two accounts, sign in to a secondary profile once:
 
 ```sh
 CLAUDE_CONFIG_DIR="$HOME/.claude-secondary" claude auth login
 ```
 
-`baton start` and `baton resume` register Baton's Stop hook in each selected
+then point three roles at it in `baton.conf`:
+
+```ini
+principal.config_dir=~/.claude-secondary
+implementer.config_dir=~/.claude-secondary
+reviewer.config_dir=~/.claude-secondary
+```
+
+This keeps three concurrent panes on each account. `baton start` and
+`baton resume` register Baton's Stop hook in each selected
 profile's `settings.json` and trust the project in that profile. Session IDs
 and their profile paths are saved with each run, so `baton resume` continues
 each role under the same account even if the configuration later changes.
@@ -233,8 +240,9 @@ profile assignments above. Override either setting for one new run with
 `baton start --accounts=one DIR` or `baton start --accounts=two DIR`.
 `baton start --profile=aiisciced12 DIR` puts all six roles on the primary
 account, while `baton start --profile=sundayisaacandy DIR` puts all six on the
-secondary account. Plain `baton start` uses the configured split (`accounts=two`
-by default). Do not combine `--profile` and `--accounts`.
+secondary account. Plain `baton start` uses the configured split; with no `config_dir`
+settings, every role launches on the default profile. Do not combine
+`--profile` and `--accounts`.
 The selected profile for each role is saved in the run's `profiles.map`, so
 switching the setting later does not change running or resumed runs. To move a
 run to the other account, stop it first, then run

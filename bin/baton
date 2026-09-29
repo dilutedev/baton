@@ -964,7 +964,6 @@ cmd_config() {
       "$(resolve_setting "$dir" "$role" model)" \
       "$(resolve_setting "$dir" "$role" effort)" "${config_dir:-default}"
   done
-  printf 'accounts=%s\n' "$accounts"
   printf 'layout=%s\n' "$(resolve_layout "$dir")"
 }
 
