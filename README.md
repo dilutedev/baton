@@ -48,10 +48,11 @@ git clone <this repo> ~/.baton
 3. Appends `export PATH="$HOME/.baton/bin:$PATH"` to your `~/.zshrc` or
    `~/.bashrc` (whichever matches `$SHELL`), if that line isn't already
    there.
-4. Registers `~/.baton/hooks/baton-dispatch.sh` as a global Stop
-   hook in `~/.claude/settings.json`, if it isn't already registered. This
-   only adds an entry to the `Stop` hook list - it doesn't touch any other
-   hooks you have configured.
+4. Registers `~/.baton/hooks/baton-dispatch.sh` as a global Stop hook and
+   `~/.baton/hooks/baton-session-start.sh` as a global SessionStart hook
+   (matcher `clear`) in `~/.claude/settings.json`, if they aren't already
+   registered. This only adds entries to those hook lists - it doesn't
+   touch any other hooks you have configured.
 
 If your shell isn't zsh or bash, or you'd rather do it by hand, the two
 things `install.sh` does for you are:
@@ -72,6 +73,14 @@ export PATH="$HOME/.baton/bin:$PATH"
           { "type": "command", "command": "$HOME/.baton/hooks/baton-dispatch.sh", "timeout": 10 }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "clear",
+        "hooks": [
+          { "type": "command", "command": "$HOME/.baton/hooks/baton-session-start.sh", "timeout": 10 }
+        ]
+      }
     ]
   }
 }
@@ -83,12 +92,15 @@ project directory.
 ## Usage
 
 ```
-baton start [--think] [DIR]   Start a new instance for DIR (default: cwd)
+baton start [--think] [--profile=aiisciced12|sundayisaacandy] [DIR]
+                               Start a new instance for DIR (default: cwd)
 baton status [DIR]            List every instance for DIR, running or stopped
 baton attach [REF] [DIR]      Switch into a running instance (REF: slug or uuid)
-baton resume [REF] [DIR]      Reconnect a stopped instance's panes to their saved sessions
+baton resume [--profile=aiisciced12|sundayisaacandy] [REF] [DIR]
+                               Reconnect a stopped instance's panes to their saved sessions
 baton stop [REF] [DIR]        Kill a running instance
-baton config [DIR]            Show each role's resolved model/effort/layout for DIR
+baton remove [REF] [DIR]      Stop and delete one instance's Baton files
+baton config [DIR]            Show each role's resolved model/effort/profile/layout for DIR
 ```
 
 `REF` is optional whenever `DIR` has exactly one instance. A "run" gets a
@@ -109,6 +121,11 @@ creates a dedicated workspace. Either way, `baton stop` only ever
 closes what that run itself created - a tab it added to your workspace, or
 a workspace it created outright - never the rest of your panes.
 
+`baton remove [REF] [DIR]` closes the selected run if it is running, then
+deletes only `DIR/.baton/s/<uuid>/`. It leaves other runs, project files,
+kata backlog items, and Claude conversation transcripts in place. Specify
+`REF` when the directory has more than one run.
+
 ### `--think`
 
 `baton start --think DIR` drops a `think` marker file in the run's
@@ -118,13 +135,25 @@ runs.
 
 ### Trust
 
-`baton start`/`resume` mark `DIR` as trusted in `~/.claude.json`
+`baton start`/`resume` mark `DIR` as trusted in each role's Claude profile
 (the same field Claude Code itself sets when you answer "Yes, I trust this
 folder") before launching any panes. Naming `DIR` to `baton` already is
 that trust decision - without this, all 6 panes would otherwise stall on that
 dialog with no one watching to answer it, since herdr's `agent start` (unlike
 a blind tmux `send-keys`) actually waits for the launched `claude` to become
 interactive-ready.
+
+### Mid-run `/clear`
+
+Between backlog items, the conductor sends `/clear` to the other 5 panes
+(see `prompts/conductor.prompt.md`'s "Dispatching an item") so a role's
+turns from the previous item don't ride along into the next one. `/clear`
+starts a new Claude Code session under a new id in that same pane -
+`hooks/baton-session-start.sh`, registered as a `SessionStart` hook
+(matcher `clear`) alongside the Stop hook, catches that and rewrites the
+role's row in `$marker_dir/sessions.map` to the new id. Without it, `baton
+stop` followed by `baton resume` would resume the stale pre-clear
+conversation and silently drop every turn since the clear.
 
 ### Backlog tracking
 
@@ -144,7 +173,7 @@ already summarizes per run.
 
 ## Configuration
 
-Per-role `model`/`effort`, plus the window `layout` (see [Pane layout &
+Per-role `model`/`effort`/`config_dir`, plus the window `layout` (see [Pane layout &
 readability](#pane-layout--readability) below), come from a `baton.conf`
 file, with project-level settings winning over global ones:
 
@@ -158,7 +187,9 @@ built-in fallback               ->  model=sonnet, effort=high, layout=tiled
 
 Roles: `conductor`, `researcher`, `planner`, `principal`, `implementer`,
 `reviewer`. `model` is an alias (`sonnet`, `opus`, `fable`) or a full model
-name; `effort` is `low`/`medium`/`high`/`xhigh`/`max`.
+name; `effort` is `low`/`medium`/`high`/`xhigh`/`max`. An unset `config_dir`
+uses the normal Claude profile. Set it to an absolute path or a path beginning
+with `~/` to use another profile.
 
 Example `~/.baton/baton.conf`:
 
@@ -176,6 +207,54 @@ To override just one project, create `<project>/.baton/config` with
 the same `<role>.<key>`/`default.<key>` syntax - it's checked first. Run
 `baton config [DIR]` any time to see exactly what a directory would
 launch with.
+
+### Two Claude accounts
+
+The default configuration uses your existing Claude profile for conductor,
+researcher, and planner (the default profile). Principal, implementer, and
+reviewer use `~/.claude-secondary` (the secondary profile). Sign in to the
+secondary profile once before starting a run:
+
+```sh
+CLAUDE_CONFIG_DIR="$HOME/.claude-secondary" claude auth login
+```
+
+`baton start` and `baton resume` register Baton's Stop hook in each selected
+profile's `settings.json` and trust the project in that profile. Session IDs
+and their profile paths are saved with each run, so `baton resume` continues
+each role under the same account even if the configuration later changes.
+Project-level `<role>.config_dir` settings can override the assignments.
+Running panes keep their launch profile. Runs created before profile tracking
+continue under the default profile when resumed.
+
+Set `accounts=one` in `baton.conf` or `<project>/.baton/config` to launch all
+six roles under the default profile. Set `accounts=two` to use the per-role
+profile assignments above. Override either setting for one new run with
+`baton start --accounts=one DIR` or `baton start --accounts=two DIR`.
+`baton start --profile=aiisciced12 DIR` puts all six roles on the primary
+account, while `baton start --profile=sundayisaacandy DIR` puts all six on the
+secondary account. Plain `baton start` uses the configured split (`accounts=two`
+by default). Do not combine `--profile` and `--accounts`.
+The selected profile for each role is saved in the run's `profiles.map`, so
+switching the setting later does not change running or resumed runs. To move a
+run to the other account, stop it first, then run
+`baton resume --profile=sundayisaacandy REF DIR` or
+`baton resume --profile=aiisciced12 REF DIR`. All six roles resume their saved
+conversations under the chosen login; a running run cannot switch accounts.
+Run Baton from a shell without `CLAUDE_CONFIG_DIR` set; Baton assigns the
+profile for each pane itself.
+
+For new runs, Baton stores each role's transcript and session sidecar files in
+`~/.baton/transcripts/<run-id>/`. Links from both profiles' Claude project
+directories point to those files so either login can resume the same session
+IDs. Baton creates these links automatically; it does not merge account logins
+or other profile settings. `baton remove` leaves transcripts and links in place.
+Existing runs keep their current transcript locations. Claude's automatic
+project memory remains under its profile `projects/` directory; on this machine
+the secondary profile's `projects/` points to the primary's, so that memory is
+shared. Claude Code's supported custom project-directory name requires an
+explicit `CLAUDE_CONFIG_DIR`, which this machine's primary login does not use;
+the per-session links let Baton retain the existing login.
 
 ### Using z.ai / GLM models
 
@@ -279,3 +358,4 @@ Two ways to deal with it:
 | `BATON_ROLE`          | `baton`          | This pane's role name                          |
 | `BATON_PROMPT_DIR`    | you (optional)        | Override where role `.prompt.md` files live    |
 | `BATON_CONF`          | you (optional)        | Override the global `baton.conf` path    |
+| `CLAUDE_CONFIG_DIR`   | `baton` for configured roles | Separate Claude profile directory |

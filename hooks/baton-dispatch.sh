@@ -64,8 +64,11 @@ forward_payload() {
   # agent prompt sends text + Enter as one ordered submission, and refuses
   # (rather than typing blind) if the target pane is sitting at an
   # approval/question dialog - a real safety improvement over tmux send-keys.
+  # Deliberately doesn't `herdr agent focus` the target - a handoff can land
+  # while the human is looking at an unrelated pane (mid-edit, reviewing a
+  # different role), and stealing focus every time any role completes a
+  # turn was yanking them away from what they were actually doing.
   herdr agent prompt "$agent_name" "$flat_payload" >/dev/null 2>&1
-  herdr agent focus "$agent_name" >/dev/null 2>&1
 }
 
 # kata_json <json> <dotted.path> -> mirrors bin/baton's herdr_json,
@@ -206,9 +209,9 @@ dispatch_marker() {
 # without handing off, and nothing else is watching this pane to notice -
 # that's a stalled, silently-blocked pipeline, not a completed step.
 #
-# Blocks the Stop (via hookSpecificOutput.additionalContext - non-error
-# feedback, not a hook-error) twice, reminding the role to finish the
-# handoff. If it still hasn't after two reminders, stop nagging (Claude Code
+# Blocks the Stop (via top-level decision:"block" - non-error feedback, not
+# a hook-error) twice, reminding the role to finish the handoff. If it still
+# hasn't after two reminders, stop nagging (Claude Code
 # itself hard-caps at 8 consecutive Stop blocks per turn) and instead ping
 # the conductor pane once so a human/the conductor notices the stall. A
 # successful handoff at any point (above) clears this state.
@@ -244,18 +247,16 @@ require_handoff_or_nudge() {
 import json, sys
 role, item_ref = sys.argv[1], sys.argv[2]
 print(json.dumps({
-    "hookSpecificOutput": {
-        "hookEventName": "Stop",
-        "additionalContext": (
-            "This turn ended without a baton-handoff call for backlog item "
-            + item_ref + ". If the work is complete, finish the remaining "
-            "Completion/Version control steps and run "
-            "`baton-handoff --status done <path>`. If you are genuinely "
-            "blocked, run `baton-handoff --status blocked --route <role> "
-            "<path>` instead. Do not end the turn again without one of those "
-            "two calls."
-        ),
-    }
+    "decision": "block",
+    "reason": (
+        "This turn ended without a baton-handoff call for backlog item "
+        + item_ref + ". If the work is complete, finish the remaining "
+        "Completion/Version control steps and run "
+        "`baton-handoff --status done <path>`. If you are genuinely "
+        "blocked, run `baton-handoff --status blocked --route <role> "
+        "<path>` instead. Do not end the turn again without one of those "
+        "two calls."
+    ),
 }))
 ' "$BATON_ROLE" "$item_ref"
 }

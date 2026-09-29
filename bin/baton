@@ -35,12 +35,15 @@ GLOBAL_CONF="${BATON_CONF:-$ROOT_DIR/baton.conf}"
 usage() {
   cat <<'EOF'
 Usage:
-  baton start [--think] [DIR]        Start a new instance for DIR (default: cwd)
+  baton start [--think] [--profile=aiisciced12|sundayisaacandy] [DIR]
+                                    Start a new instance for DIR (default: cwd)
   baton status [DIR]                 List every instance for DIR, running or stopped
   baton attach [REF] [DIR]           Switch into a running instance (REF: slug or uuid)
-  baton resume [REF] [DIR]           Reconnect a stopped instance's panes to their saved sessions
+  baton resume [--profile=aiisciced12|sundayisaacandy] [REF] [DIR]
+                                    Reconnect a stopped instance's panes to their saved sessions
   baton stop [REF] [DIR]             Kill a running instance
-  baton config [DIR]                 Show each role's resolved model/effort for DIR
+  baton remove [REF] [DIR]           Stop and delete an instance's Baton files
+  baton config [DIR]                 Show each role's resolved model/effort/profile for DIR
 
 REF is optional when DIR has exactly one instance. See baton.conf (next to
 this script's parent dir, or $BATON_CONF) for per-role model/effort
@@ -106,29 +109,20 @@ require_deps() {
   }
 }
 
-# trust_dir <dir> -> marks <dir> as trusted in ~/.claude.json
-# (projects[<dir>].hasTrustDialogAccepted = true), the same field Claude
-# Code itself sets when a human answers "Yes, I trust this folder". Naming
-# <dir> to `baton start` already is that trust decision, so panes
-# would otherwise all stall on that dialog with no one watching to answer
-# it - herdr's agent start actually checks readiness (tmux never did), so
-# an unanswered dialog now blocks the whole spawn loop instead of sitting
-# unnoticed.
-trust_dir() {
-  python3 -c '
-import json, os, sys
-path = os.path.expanduser("~/.claude.json")
-try:
-    with open(path) as f:
-        d = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    d = {}
-projects = d.setdefault("projects", {})
-proj = projects.setdefault(sys.argv[1], {})
-proj["hasTrustDialogAccepted"] = True
-with open(path, "w") as f:
-    json.dump(d, f, indent=2)
-' "$1"
+# session_has_transcript <dir> <session-id> -> true if Claude has ever
+# actually written a transcript for <session-id> under <dir>'s project
+# directory. A role's --session-id is minted at `baton start` for all 6
+# roles up front, but Claude only creates ~/.claude/projects/<encoded
+# dir>/<session-id>.jsonl once that session gets its first real turn - a
+# role that never got dispatched to before the instance stopped has a
+# recorded id with no file behind it, and `--resume` on that id fails with
+# "No conversation found". Claude encodes a project's absolute path by
+# replacing every non-alphanumeric character with '-' (verified
+# empirically against ~/.claude/projects - not documented anywhere).
+session_has_transcript() {
+  local dir="$1" id="$2" config_dir="$3" encoded
+  encoded="$(printf '%s' "$dir" | tr -c 'a-zA-Z0-9' '-')"
+  [ -f "${config_dir:-$HOME/.claude}/projects/$encoded/$id.jsonl" ]
 }
 
 # Resolves REF (a slug from an instance's `slug` file, a bare instance uuid,
@@ -214,6 +208,97 @@ resolve_setting() {
   esac
 }
 
+resolve_config_dir() {
+  local configured_dir
+  configured_dir="$(resolve_setting "$1" "$2" config_dir)"
+  case "$configured_dir" in
+  "") echo "" ;;
+  "~") echo "$HOME" ;;
+  "~/"*) echo "$HOME/${configured_dir#\~/}" ;;
+  /*) echo "$configured_dir" ;;
+  *) echo "baton: $2.config_dir must be an absolute path or start with ~/: $configured_dir" >&2; return 1 ;;
+  esac
+}
+
+resolve_accounts() {
+  local dir="$1" configured_mode
+  configured_mode="$(config_get "$dir/.baton/config" accounts)"
+  [ -n "$configured_mode" ] || configured_mode="$(config_get "$GLOBAL_CONF" accounts)"
+  echo "${configured_mode:-two}"
+}
+
+profile_config_dir() {
+  case "$1" in
+  aiisciced12) echo "" ;;
+  sundayisaacandy) echo "$HOME/.claude-secondary" ;;
+  *) echo "baton: unknown profile '$1' (use aiisciced12 or sundayisaacandy)" >&2; return 1 ;;
+  esac
+}
+
+link_session_transcript() {
+  local dir="$1" instance="$2" session_id="$3" encoded transcript_dir profile_dir project_dir item source target
+  encoded="$(printf '%s' "$dir" | tr -c 'a-zA-Z0-9' '-')"
+  transcript_dir="$HOME/.baton/transcripts/$instance"
+  mkdir -p "$transcript_dir/$session_id"
+  for profile_dir in "$HOME/.claude" "$HOME/.claude-secondary"; do
+    project_dir="$profile_dir/projects/$encoded"
+    mkdir -p "$project_dir"
+    for item in "$session_id.jsonl" "$session_id"; do
+      source="$project_dir/$item"
+      target="$transcript_dir/$item"
+      if [ -L "$source" ] && [ "$(readlink "$source")" = "$target" ]; then
+        continue
+      fi
+      if [ -e "$source" ] || [ -L "$source" ]; then
+        echo "baton: transcript path already exists: $source" >&2
+        return 1
+      fi
+      ln -s "$target" "$source"
+    done
+  done
+}
+
+prepare_profile() {
+  local dir="$1" config_dir="$2"
+  python3 - "$dir" "${config_dir:-$HOME/.claude}" "$ROOT_DIR/hooks/baton-dispatch.sh" \
+    "$ROOT_DIR/hooks/baton-session-start.sh" "$([ -n "$config_dir" ] && echo 1 || echo 0)" <<'PYEOF'
+import json, os, sys
+
+project_dir, config_dir, stop_hook_command, session_start_hook_command, custom_profile = sys.argv[1:]
+state_file = os.path.join(config_dir, ".claude.json") if custom_profile == "1" else os.path.expanduser("~/.claude.json")
+settings_file = os.path.join(config_dir, "settings.json")
+
+for file_path in (state_file, settings_file):
+    try:
+        with open(file_path) as file:
+            data = json.load(file)
+    except FileNotFoundError:
+        data = {}
+    changed = False
+    if file_path == state_file:
+        project = data.setdefault("projects", {}).setdefault(project_dir, {})
+        if project.get("hasTrustDialogAccepted") is not True:
+            project["hasTrustDialogAccepted"] = True
+            changed = True
+    else:
+        hooks = data.setdefault("hooks", {})
+        stop_hooks = hooks.setdefault("Stop", [])
+        if not any(hook.get("command") == stop_hook_command for group in stop_hooks for hook in group.get("hooks", [])):
+            stop_hooks.append({"matcher": "", "hooks": [{"type": "command", "command": stop_hook_command, "timeout": 10}]})
+            changed = True
+        session_start_hooks = hooks.setdefault("SessionStart", [])
+        if not any(hook.get("command") == session_start_hook_command for group in session_start_hooks for hook in group.get("hooks", [])):
+            session_start_hooks.append({"matcher": "clear", "hooks": [{"type": "command", "command": session_start_hook_command, "timeout": 10}]})
+            changed = True
+    if not changed:
+        continue
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "w") as file:
+        json.dump(data, file, indent=2)
+        file.write("\n")
+PYEOF
+}
+
 # resolve_layout <dir> -> layout name for the pipeline tab. Not per-role
 # (it's a tab-level setting). Precedence:
 # DIR/.baton/config[layout] > $GLOBAL_CONF[layout] > "tiled".
@@ -293,20 +378,29 @@ layout_split_plan() {
 # "resume" (read sessions.map and --resume each one). Prints
 # "<workspace_id> <tab_id>".
 spawn_pipeline_panes() {
-  local dir="$1" name="$2" marker_dir="$3" mode="$4"
+  local dir="$1" name="$2" marker_dir="$3" mode="$4" accounts="${5:-two}" profile="${6:-}"
   local sessions_file="$marker_dir/sessions.map"
+  local profiles_file="$marker_dir/profiles.map"
   local agents_file="$marker_dir/agents.map"
   : >"$agents_file"
   [ "$mode" = "start" ] && : >"$sessions_file"
+  [ "$mode" = "start" ] && : >"$profiles_file"
 
   local instance
   instance="$(basename "$marker_dir")"
+  if [ "$mode" = "start" ]; then
+    [ ! -e "$HOME/.baton/transcripts/$instance" ] || {
+      echo "baton: transcript directory already exists for '$instance'" >&2
+      return 1
+    }
+    mkdir -p "$HOME/.baton/transcripts/$instance"
+  fi
 
   local layout
   layout="$(resolve_layout "$dir")"
 
   local role idx=0 pane_id
-  local pane_ids=() agent_names=() session_flag_names=() session_ids=() models=() efforts=()
+  local pane_ids=() agent_names=() session_flag_names=() session_ids=() models=() efforts=() config_dirs=()
   local workspace_id="" tab_id="" root_pane_id="" owns_workspace=""
   # Phase 1: create every pane and record what each role needs to launch
   # with. Splits have to stay sequential - the grid plan (layout_split_plan)
@@ -318,9 +412,29 @@ spawn_pipeline_panes() {
 
     models[$idx]="$(resolve_setting "$dir" "$role" model)"
     efforts[$idx]="$(resolve_setting "$dir" "$role" effort)"
+    if [ -n "$profile" ]; then
+      config_dirs[$idx]="$(profile_config_dir "$profile")"
+    elif [ "$mode" = "resume" ]; then
+      config_dirs[$idx]=""
+      if [ -f "$profiles_file" ]; then
+        config_dirs[$idx]="$(awk -F'\t' -v r="$role" '$1==r{print $2}' "$profiles_file")"
+        [ "${config_dirs[$idx]}" = "-" ] && config_dirs[$idx]=""
+      fi
+    elif [ "$accounts" = "one" ]; then
+      config_dirs[$idx]=""
+    else
+      config_dirs[$idx]="$(resolve_config_dir "$dir" "$role")"
+    fi
+    if [ "$mode" = "start" ]; then
+      printf '%s\t%s\n' "$role" "${config_dirs[$idx]:--}" >>"$profiles_file"
+    fi
+    prepare_profile "$dir" "${config_dirs[$idx]}"
 
     local env_flags=(--env "PATH=$BIN_DIR:$PATH" --env "BATON_ROOT=$dir" \
       --env "BATON_MARKER_DIR=$marker_dir" --env "BATON_ROLE=$role")
+    if [ -n "${config_dirs[$idx]}" ]; then
+      env_flags+=(--env "CLAUDE_CONFIG_DIR=${config_dirs[$idx]}")
+    fi
     # z.ai GLM models need the same ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
     # override the `zai` shell function applies for interactive use - baton
     # calls `claude` directly (never through that function), so it has to
@@ -377,6 +491,7 @@ spawn_pipeline_panes() {
     if [ "$mode" = "start" ]; then
       session_ids[$idx]="$(uuidgen | tr 'A-Z' 'a-z')"
       printf '%s\t%s\n' "$role" "${session_ids[$idx]}" >>"$sessions_file"
+      link_session_transcript "$dir" "$instance" "${session_ids[$idx]}"
       session_flag_names[$idx]="--session-id"
     else
       session_ids[$idx]="$(awk -F'\t' -v r="$role" '$1==r{print $2}' "$sessions_file")"
@@ -384,7 +499,14 @@ spawn_pipeline_panes() {
         echo "baton: no recorded session id for '$role' in $sessions_file - this instance predates session tracking and can't be auto-resumed" >&2
         exit 1
       }
-      session_flag_names[$idx]="--resume"
+      if session_has_transcript "$dir" "${session_ids[$idx]}" "${config_dirs[$idx]}"; then
+        session_flag_names[$idx]="--resume"
+      else
+        # Never dispatched to - mint it fresh under the same recorded id
+        # instead of resuming, so sessions.map still matches once this
+        # role's first real turn lands.
+        session_flag_names[$idx]="--session-id"
+      fi
     fi
   done
 
@@ -407,7 +529,7 @@ spawn_pipeline_panes() {
       # start rejects arguments it can't safely re-encode for the pane's
       # shell. A non-zero exit here can mean the launch genuinely failed,
       # or just that the agent is sitting at some other startup dialog we
-      # didn't anticipate (trust_dir handles the one we know about) -
+      # didn't anticipate -
       # agents.map already has this role's name, and herdr keeps it
       # addressable either way, so warn and let the rest of the pipeline's
       # launches (each its own background job here) keep going.
@@ -451,15 +573,44 @@ attach_or_launch() {
 }
 
 cmd_start() {
-  local think=0
-  local dir="."
-  for arg in "$@"; do
-    case "$arg" in
+  local think=0 dir="." accounts="" profile=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
     --think) think=1 ;;
-    *) dir="$arg" ;;
+    --profile=*)
+      profile="${1#--profile=}"
+      [ -n "$profile" ] || { echo "baton: --profile requires aiisciced12 or sundayisaacandy" >&2; exit 1; }
+      ;;
+    --profile)
+      shift
+      [ "$#" -gt 0 ] || { echo "baton: --profile requires aiisciced12 or sundayisaacandy" >&2; exit 1; }
+      profile="$1"
+      ;;
+    --accounts=*) accounts="${1#--accounts=}" ;;
+    --accounts)
+      shift
+      [ "$#" -gt 0 ] || { echo "baton: --accounts requires one or two" >&2; exit 1; }
+      accounts="$1"
+      ;;
+    -*) echo "baton: unknown start option '$1'" >&2; exit 1 ;;
+    *) dir="$1" ;;
     esac
+    shift
   done
   dir="$(cd "$dir" && pwd)"
+  if [ -n "$profile" ]; then
+    [ -z "$accounts" ] || { echo "baton: use --profile or --accounts, not both" >&2; exit 1; }
+    profile_config_dir "$profile" >/dev/null
+  fi
+  [ -n "$accounts" ] || accounts="$(resolve_accounts "$dir")"
+  case "$accounts" in
+  one|two) ;;
+  *) echo "baton: accounts must be 'one' or 'two', got '$accounts'" >&2; exit 1 ;;
+  esac
+  [ -z "${CLAUDE_CONFIG_DIR:-}" ] || {
+    echo "baton: unset CLAUDE_CONFIG_DIR before starting; Baton selects each role's profile" >&2
+    exit 1
+  }
 
   for role in "${ROLES[@]}"; do
     [ -f "$PROMPT_DIR/$role.prompt.md" ] || {
@@ -491,10 +642,8 @@ cmd_start() {
   local name
   name="$(name_for "$dir" "$instance")"
 
-  trust_dir "$dir"
-
   local result workspace_id tab_id
-  result="$(spawn_pipeline_panes "$dir" "$name" "$marker_dir" start)"
+  result="$(spawn_pipeline_panes "$dir" "$name" "$marker_dir" start "$accounts" "$profile")"
   workspace_id="${result%% *}"
   tab_id="${result##* }"
   echo "$workspace_id" >"$marker_dir/workspace_id"
@@ -523,7 +672,33 @@ cmd_attach() {
 }
 
 cmd_resume() {
-  parse_ref_dir_args "$@"
+  local profile="" positional_args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --profile=*)
+      profile="${1#--profile=}"
+      [ -n "$profile" ] || { echo "baton: --profile requires aiisciced12 or sundayisaacandy" >&2; exit 1; }
+      ;;
+    --profile)
+      shift
+      [ "$#" -gt 0 ] || { echo "baton: --profile requires aiisciced12 or sundayisaacandy" >&2; exit 1; }
+      profile="$1"
+      ;;
+    -*) echo "baton: unknown resume option '$1'" >&2; exit 1 ;;
+    *) positional_args+=("$1") ;;
+    esac
+    shift
+  done
+  [ -z "$profile" ] || profile_config_dir "$profile" >/dev/null
+  [ -z "${CLAUDE_CONFIG_DIR:-}" ] || {
+    echo "baton: unset CLAUDE_CONFIG_DIR before resuming; Baton restores each role's saved profile" >&2
+    exit 1
+  }
+  if [ "${#positional_args[@]}" -eq 0 ]; then
+    parse_ref_dir_args
+  else
+    parse_ref_dir_args "${positional_args[@]}"
+  fi
   local instance
   instance="$(resolve_instance "$DIR" "$REF")" || exit 1
 
@@ -534,6 +709,7 @@ cmd_resume() {
   local existing_tab
   existing_tab="$(cat "$marker_dir/tab_id" 2>/dev/null)"
   if [ -n "$existing_tab" ] && herdr tab get "$existing_tab" >/dev/null 2>&1; then
+    [ -z "$profile" ] || { echo "baton: stop instance '$instance' before switching profiles" >&2; exit 1; }
     echo "baton: instance '$instance' is already running - attaching instead of resuming"
     attach_or_launch "$existing_tab"
     return $?
@@ -544,14 +720,37 @@ cmd_resume() {
     exit 1
   }
 
-  trust_dir "$DIR"
+  if [ -n "$profile" ]; then
+    local role session_id previous_dir selected_dir
+    selected_dir="$(profile_config_dir "$profile")"
+    for role in "${ROLES[@]}"; do
+      session_id="$(awk -F'\t' -v selected_role="$role" '$1==selected_role{print $2}' "$marker_dir/sessions.map")"
+      previous_dir=""
+      if [ -f "$marker_dir/profiles.map" ]; then
+        previous_dir="$(awk -F'\t' -v selected_role="$role" '$1==selected_role{print $2}' "$marker_dir/profiles.map")"
+        [ "$previous_dir" = "-" ] && previous_dir=""
+      fi
+      if [ -n "$session_id" ] && session_has_transcript "$DIR" "$session_id" "$previous_dir" && ! session_has_transcript "$DIR" "$session_id" "$selected_dir"; then
+        echo "baton: '$role' has a transcript in its previous profile but not '$profile'; refusing to start a fresh conversation" >&2
+        exit 1
+      fi
+    done
+  fi
 
   local result workspace_id tab_id
-  result="$(spawn_pipeline_panes "$DIR" "$name" "$marker_dir" resume)"
+  result="$(spawn_pipeline_panes "$DIR" "$name" "$marker_dir" resume two "$profile")"
   workspace_id="${result%% *}"
   tab_id="${result##* }"
   echo "$workspace_id" >"$marker_dir/workspace_id"
   echo "$tab_id" >"$marker_dir/tab_id"
+  if [ -n "$profile" ]; then
+    local role config_dir
+    config_dir="$(profile_config_dir "$profile")"
+    : >"$marker_dir/profiles.map"
+    for role in "${ROLES[@]}"; do
+      printf '%s\t%s\n' "$role" "${config_dir:--}" >>"$marker_dir/profiles.map"
+    done
+  fi
   echo "baton: resumed '$name' ($instance) for $DIR"
 
   attach_or_launch "$tab_id"
@@ -585,54 +784,187 @@ cmd_stop() {
   fi
 }
 
+cmd_remove() {
+  parse_ref_dir_args "$@"
+  local instance
+  instance="$(resolve_instance "$DIR" "$REF")" || exit 1
+
+  case "$instance" in
+  *[!0123456789abcdef]*|"")
+    echo "baton: invalid instance id '$instance'" >&2
+    exit 1
+    ;;
+  esac
+  [ "${#instance}" -eq 8 ] || { echo "baton: invalid instance id '$instance'" >&2; exit 1; }
+
+  local marker_dir="$DIR/.baton/s/$instance"
+  if [ -L "$DIR/.baton" ] || [ -L "$DIR/.baton/s" ] || [ -L "$marker_dir" ]; then
+    echo "baton: refusing to remove an instance through a symlink: $marker_dir" >&2
+    exit 1
+  fi
+
+  local tab_id workspace_id owns tab_json
+  tab_id="$(cat "$marker_dir/tab_id" 2>/dev/null || true)"
+  workspace_id="$(cat "$marker_dir/workspace_id" 2>/dev/null || true)"
+  owns="$(cat "$marker_dir/owns_workspace" 2>/dev/null || true)"
+  if [ -n "$tab_id" ]; then
+    if tab_json="$(herdr tab get "$tab_id" 2>&1)"; then
+      if [ "$owns" = "1" ] && [ -n "$workspace_id" ]; then
+        herdr workspace close "$workspace_id" >/dev/null || exit 1
+      else
+        herdr tab close "$tab_id" >/dev/null || exit 1
+      fi
+    elif [ "$(herdr_json "$tab_json" error.code)" != "tab_not_found" ]; then
+      echo "baton: could not check whether instance '$instance' is running: $tab_json" >&2
+      exit 1
+    fi
+  fi
+
+  rm -r -- "$marker_dir"
+  echo "baton: removed '$instance' from $DIR"
+}
+
+# use_color -> true for an interactive stdout (a human at a terminal), same
+# convention as ls/grep --color=auto. NO_COLOR (no-color.org) and piped or
+# redirected output (scripts, tests, log capture) both stay plain.
+use_color() {
+  [ -z "${NO_COLOR:-}" ] && [ -t 1 ]
+}
+
+# paint <sgr-code> <text> -> <text> wrapped in that SGR code, or plain if
+# use_color says no. SGR codes, not names, since this is the only place
+# they're used and a lookup table would be indirection with one caller.
+paint() {
+  if use_color; then
+    printf '\033[%sm%s\033[0m' "$1" "$2"
+  else
+    printf '%s' "$2"
+  fi
+}
+
+# instance_state_sgr/agent_status_sgr <state> -> the SGR code paint should
+# use for that instance/agent state. Agent states per `herdr agent wait
+# --help`'s --until: idle, working, blocked, done, unknown.
+instance_state_sgr() {
+  case "$1" in
+  running) echo "32" ;; # green
+  *) echo "90" ;; # gray
+  esac
+}
+
+agent_status_sgr() {
+  case "$1" in
+  working) echo "33" ;; # yellow
+  blocked) echo "31" ;; # red
+  done) echo "32" ;; # green
+  idle) echo "36" ;; # cyan
+  *) echo "90" ;; # gray
+  esac
+}
+
+# render_backlog <dir> <slug> -> the run's backlog items, one per line as
+# "[x] <short_id>  <title>" (closed vs open), indented for cmd_status. Reads
+# `kata list --json` rather than the `--agent` key=value text (open=…
+# owner=andy labels=backlog-<slug> … revision=1 repeated on every line) -
+# that format is a contract for agents parsing kata output programmatically,
+# not for a human skimming `baton status`.
+render_backlog() {
+  local dir="$1" slug="$2" color_flag="0" json
+  if use_color; then
+    color_flag="1"
+  fi
+  json="$(cd "$dir" && kata list --label "backlog-$slug" --no-label baton-backlog --status all --json 2>/dev/null)"
+  [ -n "$json" ] || return 0
+  python3 -c '
+import json, sys
+
+data, color = sys.argv[1], sys.argv[2] == "1"
+
+def paint(code, text):
+    return "\033[" + code + "m" + text + "\033[0m" if color else text
+
+try:
+    issues = json.loads(data).get("issues", [])
+except Exception:
+    sys.exit(0)
+
+if not issues:
+    print("    (no backlog items yet)")
+    sys.exit(0)
+
+closed_count = sum(1 for item in issues if item.get("status") == "closed")
+print("    " + paint("32", str(closed_count) + " closed") + " / " + str(len(issues)) + " total")
+for item in issues:
+    mark = paint("32", "x") if item.get("status") == "closed" else " "
+    print("    [" + mark + "] " + item.get("short_id", "?") + "  " + item.get("title", "?"))
+' "$json" "$color_flag"
+}
+
 cmd_status() {
   local dir="${1:-.}"
   dir="$(cd "$dir" && pwd)"
 
   local base="$dir/.baton/s"
-  if [ ! -d "$base" ]; then
-    echo "baton: no instances for $dir"
-  else
-    local d uuid slug tab_id agents_file role agent_name status_json status
+  local d uuid slug tab_id agents_file role agent_name status_json status state found=0
+  if [ -d "$base" ]; then
     for d in "$base"/*/; do
       [ -d "$d" ] || continue
+      found=1
       uuid="$(basename "$d")"
       slug="(no goal yet)"
-      [ -f "$d/slug" ] && slug="$(cat "$d/slug")"
-      tab_id="$(cat "$d/tab_id" 2>/dev/null)"
+      if [ -f "$d/slug" ]; then
+        slug="$(cat "$d/slug")"
+      fi
+      tab_id="$(cat "$d/tab_id" 2>/dev/null || true)"
+      state="stopped"
       if [ -n "$tab_id" ] && herdr tab get "$tab_id" >/dev/null 2>&1; then
-        echo "instance $uuid - $slug - running"
-        agents_file="$d/agents.map"
-        if [ -f "$agents_file" ]; then
-          while IFS=$'\t' read -r role agent_name; do
-            [ -n "$role" ] || continue
-            status_json="$(herdr agent get "$agent_name" 2>/dev/null)"
-            status="$(herdr_json "$status_json" result.agent.agent_status)"
-            printf '  %-11s %s (%s)\n' "$role" "$agent_name" "${status:-unknown}"
-          done <"$agents_file"
-        fi
-      else
-        echo "instance $uuid - $slug - stopped"
+        state="running"
+      fi
+
+      printf '%s  %s  %s\n' "$(paint 1 "$uuid")" "$(paint "$(instance_state_sgr "$state")" "$state")" "$slug"
+
+      agents_file="$d/agents.map"
+      if [ "$state" = "running" ] && [ -f "$agents_file" ]; then
+        while IFS=$'\t' read -r role agent_name; do
+          [ -n "$role" ] || continue
+          status_json="$(herdr agent get "$agent_name" 2>/dev/null)"
+          status="$(herdr_json "$status_json" result.agent.agent_status)"
+          status="${status:-unknown}"
+          printf '  %-11s %-28s %s\n' "$role" "$agent_name" "$(paint "$(agent_status_sgr "$status")" "$status")"
+        done <"$agents_file"
       fi
 
       if [ -f "$d/slug" ]; then
-        echo "  backlog: $slug"
-        (cd "$dir" && kata list --label "backlog-$slug" --no-label baton-backlog --status all --agent 2>/dev/null) \
-          | sed 's/^/    /' || true
+        render_backlog "$dir" "$slug"
       fi
+      echo
     done
   fi
+
+  [ "$found" = "1" ] || echo "baton: no instances for $dir"
 }
 
 cmd_config() {
   local dir="${1:-.}"
   dir="$(cd "$dir" && pwd)"
-  local role
+  local role accounts
+  accounts="$(resolve_accounts "$dir")"
+  case "$accounts" in
+  one|two) ;;
+  *) echo "baton: accounts must be 'one' or 'two', got '$accounts'" >&2; exit 1 ;;
+  esac
   for role in "${ROLES[@]}"; do
-    printf '%-11s model=%-10s effort=%s\n' "$role" \
+    local config_dir
+    if [ "$accounts" = "one" ]; then
+      config_dir=""
+    else
+      config_dir="$(resolve_config_dir "$dir" "$role")"
+    fi
+    printf '%-11s model=%-10s effort=%-7s profile=%s\n' "$role" \
       "$(resolve_setting "$dir" "$role" model)" \
-      "$(resolve_setting "$dir" "$role" effort)"
+      "$(resolve_setting "$dir" "$role" effort)" "${config_dir:-default}"
   done
+  printf 'accounts=%s\n' "$accounts"
   printf 'layout=%s\n' "$(resolve_layout "$dir")"
 }
 
@@ -656,6 +988,11 @@ stop)
   require_deps
   shift
   cmd_stop "$@"
+  ;;
+remove)
+  require_deps
+  shift
+  cmd_remove "$@"
   ;;
 status)
   require_deps
