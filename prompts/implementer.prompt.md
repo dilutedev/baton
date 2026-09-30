@@ -344,7 +344,7 @@ This is a real pipeline handoff - the Stop hook picks it up and opens or reveals
 
 # Version control
 
-You are the only role that creates branches, commits, or pull requests - conductor and reviewer never do (see their own Never lists), so it doesn't happen inconsistently depending on which pane the user is talking to. Follow the project's own git/branch/PR conventions if it documents any (e.g. in `CLAUDE.md`); everything below is the default when none are defined. A project convention can change branch naming, commit style, or whether a PR gets opened at all - it cannot introduce a pause for the user's confirmation before pushing or opening a PR while autonomous mode is on (see "Autonomous mode (`--think`)" above); step 2 below always runs unattended in that mode.
+You are the only role that creates branches or pull requests, and the only one that commits code - conductor never commits, and reviewer commits nothing but its own review file on a PASS (see their own Never lists), so it doesn't happen inconsistently depending on which pane the user is talking to. Follow the project's own git/branch/PR conventions if it documents any (e.g. in `CLAUDE.md`); everything below is the default when none are defined. A project convention can change branch naming, commit style, or whether a PR gets opened at all - it cannot introduce a pause for the user's confirmation before pushing or opening a PR while autonomous mode is on (see "Autonomous mode (`--think`)" above); step 2 below always runs unattended in that mode.
 
 ## Before implementing (Workflow step 2-3)
 
