@@ -82,8 +82,8 @@ If a kata command reports this workspace isn't bound to a project yet (a `kata i
 
 ```
 kata create "<goal, one line>" \
-  --label backlog-<slug> --label baton-backlog \
-  --idempotency-key "baton-<slug>" \
+  --label backlog-<slug> --label baton-backlog --label baton-session-<session> \
+  --idempotency-key "baton-<session>-<slug>" \
   --body "<goal, verbatim>" --agent
 ```
 
@@ -92,19 +92,20 @@ kata create "<goal, one line>" \
 ```
 kata create "<item-id>: <title>" \
   --parent <goal-issue-ref> \
-  --label backlog-<slug> [--label checkpoint] \
+  --label backlog-<slug> --label baton-session-<session> [--label checkpoint] \
   [--blocked-by <ref-of-required-item>...] \
-  --idempotency-key "baton-<slug>-<item-id>" \
+  --idempotency-key "baton-<session>-<slug>-<item-id>" \
   --body "<1-3 sentence description of what this item covers - enough for
 researcher to know what to investigate, not a full spec>" --agent
 ```
 
+- `<session>` - this baton session's id: the last path component of `$BATON_MARKER_DIR` (`basename "$BATON_MARKER_DIR"`). Every issue you create - goal and items - carries `baton-session-<session>`, so `baton resume` and you can tell this session's issues apart from another session's, even when two sessions end up with the same `<slug>`. It also keeps the idempotency keys unique per session, so a second session with a same-slug goal creates its own issues instead of silently getting the first session's back.
 - `<item-id>` - short, stable, kebab-case (e.g. `notif-queue`, `device-tokens`). Embed it in the title so items stay human-readable in `kata list`/`kata show`; the kata ref (e.g. `abc4`) returned by `create` is the real identifier everything else - `--blocked-by`, dispatch, claim, close - operates on. Never reuse an item-id once assigned.
 - `status` - derived from kata state, never a field you set by hand: **pending** = open and unowned; **in-progress** = open and claimed by you (see "Dispatching an item"); **done** = closed (`kata close ... --done`); **blocked** = open and unowned, but excluded from `kata ready`/`kata next` because an unmet `--blocked-by` predecessor is still open. You are the only role that ever claims or closes an item - update kata yourself as items move through the pipeline, exactly as you previously owned the `status` field in the markdown file.
-- `--blocked-by` - kata's dependency graph, replacing the old `requires:` field. An item is eligible for dispatch only once every issue it's blocked by is closed; `kata ready`/`kata next` compute this for you, scoped with `--label backlog-<slug> --no-label baton-backlog` (that second flag excludes the goal issue itself, which also carries the `backlog-<slug>` label).
+- `--blocked-by` - kata's dependency graph, replacing the old `requires:` field. An item is eligible for dispatch only once every issue it's blocked by is closed; `kata ready`/`kata next` compute this for you, scoped with `--label backlog-<slug> --label baton-session-<session> --no-label baton-backlog` (that second flag excludes the goal issue itself, which also carries the `backlog-<slug>` label).
 - `checkpoint` label - flags an item you judge higher-risk (touches auth, billing, data migrations, or anything the goal calls out as sensitive) - a PASS on a `checkpoint`-labeled item stops the run for user review instead of auto-advancing (see Stopping conditions). Use sparingly; most items should carry no `checkpoint` label.
 
-Create items in dependency order - an item's `--blocked-by` needs the ref of an issue that already exists, so a top-to-bottom decomposition pass naturally respects dependencies. Keep a scratch mapping of `<item-id> -> kata ref` in your own working memory for the length of the decomposition pass to resolve `requires`-style references into `--blocked-by` refs as you go; nothing needs to persist it beyond that pass - `kata list --label backlog-<slug> --agent` is the durable record afterward.
+Create items in dependency order - an item's `--blocked-by` needs the ref of an issue that already exists, so a top-to-bottom decomposition pass naturally respects dependencies. Keep a scratch mapping of `<item-id> -> kata ref` in your own working memory for the length of the decomposition pass to resolve `requires`-style references into `--blocked-by` refs as you go; nothing needs to persist it beyond that pass - `kata list --label backlog-<slug> --label baton-session-<session> --agent` is the durable record afterward.
 
 Keep each item's body short. The backlog is a dispatch list, not the Planning Brief or Technical Brief for any item - those get produced per-item, later, by planner/researcher as normal.
 
@@ -118,9 +119,9 @@ A workspace can have several goal issues open in kata at once - one per goal, pa
 
 **Resolving which issue, by invocation shape:**
 
-- **A goal was given as free text**: derive its slug. Look it up with `kata list --label backlog-<slug> --agent` (or `kata search "<slug>" --agent` if that's inconclusive). If nothing exists, this is a new goal - go to Workflow step 2 (Scan and decompose) and create its goal issue there. If a goal issue already exists, the same goal is being resumed or re-invoked - continue it rather than starting over; do not recreate its items or discard their status. Unsure whether the new goal text is the same run? Prefer treating it as new: a duplicate goal issue costs little, silently overwriting unrelated in-flight status costs a lot. Ask the user only if genuinely ambiguous (the goal text is a near-paraphrase of an existing goal issue's title).
+- **A goal was given as free text**: derive its slug. Look it up with `kata list --label backlog-<slug> --label baton-session-<session> --agent` (or `kata search "<slug>" --agent` if that's inconclusive). If nothing exists, this is a new goal - go to Workflow step 2 (Scan and decompose) and create its goal issue there. An issue with the same `backlog-<slug>` but a different `baton-session-*` label belongs to another session - never continue it. If a goal issue already exists for this session, the same goal is being resumed or re-invoked - continue it rather than starting over; do not recreate its items or discard their status. Unsure whether the new goal text is the same run? Prefer treating it as new: a duplicate goal issue costs little, silently overwriting unrelated in-flight status costs a lot. Ask the user only if genuinely ambiguous (the goal text is a near-paraphrase of an existing goal issue's title).
 - **No goal given, `$BATON_MARKER_DIR/conductor-run` exists**: this is a pipeline handoff (e.g. reviewer's PASS routing back to you), not a fresh user request. `conductor-run`'s first line is the goal issue's kata ref; its second line, when present, is the item currently in-progress. Read those refs, not a fixed filename.
-- **No goal given, no `$BATON_MARKER_DIR/conductor-run`**: the user is resuming after the initial checkpoint (Completion's "First invocation" step) without repeating the goal. Look at `kata list --label baton-backlog --status open --agent` for goal issues with no `conductor-run` history yet - the most recently created (first in that list) is normally the one just reviewed at checkpoint. If more than one plausibly qualifies, ask the user which.
+- **No goal given, no `$BATON_MARKER_DIR/conductor-run`**: the user is resuming after the initial checkpoint (Completion's "First invocation" step) without repeating the goal. Look at `kata list --label baton-backlog --label baton-session-<session> --status open --agent` for goal issues with no `conductor-run` history yet - the most recently created (first in that list) is normally the one just reviewed at checkpoint. Never pick a goal issue from another session's label. If more than one plausibly qualifies, ask the user which.
 
 ---
 
@@ -183,10 +184,10 @@ Create the goal issue and every item issue in kata, per Backlog Format. Do not c
 
 ## 4. Dispatch the next eligible item
 
-Run `kata next --unowned --label backlog-<slug> --no-label baton-backlog --agent` against the resolved goal.
+Run `kata next --unowned --label backlog-<slug> --label baton-session-<session> --no-label baton-backlog --agent` against the resolved goal.
 
 - If it returns an item: claim it (`kata claim <ref> --agent`), create or update `$BATON_MARKER_DIR/conductor-run` (first line the goal issue's ref, second line this item's ref - see "Which backlog?"), decide where to dispatch per "Choosing where to dispatch" above, and hand off to that role with the item's body as the topic (see Completion).
-- If it returns nothing: stop per "Stopping conditions" - distinguish backlog empty (`kata list --label backlog-<slug> --no-label baton-backlog --status open --agent` is empty) from fully blocked (it isn't empty, but `kata ready` with the same filters is).
+- If it returns nothing: stop per "Stopping conditions" - distinguish backlog empty (`kata list --label backlog-<slug> --label baton-session-<session> --no-label baton-backlog --status open --agent` is empty) from fully blocked (it isn't empty, but `kata ready` with the same filters is).
 
 ---
 
@@ -216,12 +217,12 @@ Stop and report (dispatch nothing further) when any of these hold. These are the
 
 - **Initial checkpoint**: backlog just generated, not yet reviewed by the user (step 3).
 - **Backlog empty**: no open, unowned items remain at all.
-- **Fully blocked**: open items remain, but every one has at least one unmet `--blocked-by` (a genuine deadlock - `kata ready --label backlog-<slug> --no-label baton-backlog --agent` returns nothing while `kata list --label backlog-<slug> --no-label baton-backlog --status open --agent` doesn't).
+- **Fully blocked**: open items remain, but every one has at least one unmet `--blocked-by` (a genuine deadlock - `kata ready --label backlog-<slug> --label baton-session-<session> --no-label baton-backlog --agent` returns nothing while `kata list --label backlog-<slug> --label baton-session-<session> --no-label baton-backlog --status open --agent` doesn't).
 - **Checkpoint item passed**: the item reviewer just passed carried the `checkpoint` label.
 - **Item cap reached**: dispatching another item would exceed `BATON_MAX_ITEMS` for this run.
 - **Context bounce needs a user decision**: a role bounced because it lacks enough context for the current item (step 6), and the gap is a product/scope decision no item rewrite can resolve.
 
-In every case, report clearly which condition applies and the current backlog state (`kata list --label backlog-<slug> --no-label baton-backlog --status all --agent` - done / in-progress / pending / blocked counts) so the user knows exactly where the run stands and what, if anything, unblocks it.
+In every case, report clearly which condition applies and the current backlog state (`kata list --label backlog-<slug> --label baton-session-<session> --no-label baton-backlog --status all --agent` - done / in-progress / pending / blocked counts) so the user knows exactly where the run stands and what, if anything, unblocks it.
 
 ---
 
@@ -292,7 +293,7 @@ Wait for the user to review/edit the backlog (in kata - `kata edit`, `kata label
    ```
 
    Either way this hands off to whichever pane you routed to automatically. Since `conductor-run` already exists by this point (step 3), this always lands as a kata comment on the item, never a local file.
-5. Report: which item was dispatched, where it was routed and why, and current backlog status counts (`kata list --label backlog-<slug> --no-label baton-backlog --status all --agent`).
+5. Report: which item was dispatched, where it was routed and why, and current backlog status counts (`kata list --label backlog-<slug> --label baton-session-<session> --no-label baton-backlog --status all --agent`).
 
 ## Stopping (any condition in "Stopping conditions" other than the initial checkpoint)
 
