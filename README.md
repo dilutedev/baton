@@ -373,7 +373,9 @@ on a laptop, six equal panes are each too small to read comfortably. Two fixes:
   `.dispatch-state/` with the last one it credited. If no handoff landed, it
   blocks the Stop twice with a reminder to finish the handoff. If a third turn
   still ends without one, it stops nagging and pings the conductor pane once, so
-  a human notices the stall instead of the pipeline going quiet. Manually-driven
+  a human notices the stall instead of the pipeline going quiet. Once a role has
+  handed off, it isn't nudged again until `baton-handoff` from the previous role
+  sends it new work, so idle turns don't trigger a repeat handoff. Manually-driven
   chains (no `$BATON_MARKER_DIR/conductor-run`) are skipped, since a human is
   watching.
 - **`prompts/*.prompt.md`** are the six personas, loaded through each tool's

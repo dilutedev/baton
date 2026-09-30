@@ -122,7 +122,8 @@ $body_tail" \
     state_dir="$BATON_MARKER_DIR/.dispatch-state"
     mkdir -p "$state_dir"
     date +%s >"$state_dir/$BATON_ROLE.$item_ref.last_handoff"
-    rm -f "$state_dir/$BATON_ROLE.$item_ref.stop_nudges"
+    rm -f "$state_dir/$BATON_ROLE.$item_ref.stop_nudges" "$state_dir/$BATON_ROLE.$item_ref.armed"
+    [ -z "$target" ] || touch "$state_dir/$target.$item_ref.armed"
 
     exit 0
   fi

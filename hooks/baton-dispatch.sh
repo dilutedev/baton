@@ -70,6 +70,7 @@ require_handoff_or_nudge() {
   local handoff_file="$STATE_DIR/$BATON_ROLE.$item_ref.last_handoff"
   local seen_file="$STATE_DIR/$BATON_ROLE.$item_ref.last_handoff_seen"
   local count_file="$STATE_DIR/$BATON_ROLE.$item_ref.stop_nudges"
+  local armed_file="$STATE_DIR/$BATON_ROLE.$item_ref.armed"
 
   local handoff_ts="" seen_ts=""
   [ -f "$handoff_file" ] && handoff_ts="$(cat "$handoff_file")"
@@ -78,7 +79,15 @@ require_handoff_or_nudge() {
   if [ -n "$handoff_ts" ] && [ "$handoff_ts" != "$seen_ts" ]; then
     # A handoff landed since this hook last checked - not a stall.
     echo "$handoff_ts" >"$seen_file"
-    rm -f "$count_file"
+    rm -f "$count_file" "$armed_file"
+    return 0
+  fi
+
+  # Already handed off and nobody has dispatched new work since (baton-handoff
+  # arms the target role when it forwards to it) - an idle turn, not a stall.
+  # Nudging here would make the role re-run baton-handoff and re-send its
+  # payload downstream.
+  if [ -n "$handoff_ts" ] && [ ! -f "$armed_file" ]; then
     return 0
   fi
 
