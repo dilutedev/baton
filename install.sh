@@ -8,6 +8,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 chmod +x "$ROOT_DIR/bin/baton" "$ROOT_DIR/bin/baton-msg" "$ROOT_DIR/bin/baton-handoff" \
   "$ROOT_DIR/hooks/baton-dispatch.sh"
 
+if [ ! -f "$ROOT_DIR/baton.conf" ]; then
+  cp "$ROOT_DIR/baton.conf.example" "$ROOT_DIR/baton.conf"
+  echo "install.sh: created $ROOT_DIR/baton.conf from baton.conf.example - edit it to taste"
+fi
+
 for cmd in herdr kata uuidgen; do
   command -v "$cmd" >/dev/null 2>&1 || echo "install.sh: warning - '$cmd' not found on PATH, baton needs it"
 done
