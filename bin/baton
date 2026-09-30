@@ -969,9 +969,22 @@ nudge_conductor() {
   [ -f "$agents_file" ] || return 0
   agent_name="$(awk -F'\t' '$1=="conductor"{print $2}' "$agents_file")"
   [ -n "$agent_name" ] || return 0
-  herdr agent prompt "$agent_name" \
-    'Resuming this workspace - no new goal from me. If a backlog is already in flight, resolve which one applies (see "Which backlog?") and continue dispatching from wherever it left off. If nothing has been started yet, wait for a goal.' \
-    >/dev/null 2>&1
+  local slug_file="$marker_dir/slug" run_file="$marker_dir/conductor-run" session_label message
+  session_label="baton-session-$(basename "$marker_dir")"
+  if [ -f "$slug_file" ]; then
+    local goal_ref item_ref
+    message="Resuming this session - no new goal from me. This session's backlog is exactly the kata issues labeled $session_label (its goal is labeled backlog-$(cat "$slug_file") too) and nothing else: ignore every other goal issue and any open issue without that label, even if it carries the same backlog-* label or looks unfinished."
+    if [ -f "$run_file" ]; then
+      goal_ref="$(sed -n 1p "$run_file")"
+      item_ref="$(sed -n 2p "$run_file")"
+      message="$message Its goal issue is $goal_ref."
+      [ -n "$item_ref" ] && message="$message The item last in flight was $item_ref - check its state in kata before deciding what to do next."
+    fi
+    message="$message Continue dispatching from wherever it left off."
+  else
+    message="Resuming this session - no new goal from me, and no backlog has been created for this session yet. Do not look through kata for other open issues or goals to pick up; wait for a goal."
+  fi
+  herdr agent prompt "$agent_name" "$message" >/dev/null 2>&1
 }
 
 attach_or_launch() {
@@ -1205,18 +1218,18 @@ agent_status_sgr() {
   esac
 }
 
-# render_backlog <dir> <slug> -> the run's backlog items, one per line as
+# render_backlog <dir> <slug> <session> -> the run's backlog items, one per line as
 # "[x] <short_id>  <title>" (closed vs open), indented for cmd_status. Reads
 # `kata list --json` rather than the `--agent` key=value text (open=…
 # owner=andy labels=backlog-<slug> … revision=1 repeated on every line) -
 # that format is a contract for agents parsing kata output programmatically,
 # not for a human skimming `baton status`.
 render_backlog() {
-  local dir="$1" slug="$2" color_flag="0" json
+  local dir="$1" slug="$2" session="$3" color_flag="0" json
   if use_color; then
     color_flag="1"
   fi
-  json="$(cd "$dir" && kata list --label "backlog-$slug" --no-label baton-backlog --status all --json 2>/dev/null)"
+  json="$(cd "$dir" && kata list --label "backlog-$slug" --label "baton-session-$session" --no-label baton-backlog --status all --json 2>/dev/null)"
   [ -n "$json" ] || return 0
   python3 -c '
 import json, sys
@@ -1278,7 +1291,7 @@ cmd_status() {
       fi
 
       if [ -f "$d/slug" ]; then
-        render_backlog "$dir" "$slug"
+        render_backlog "$dir" "$slug" "$uuid"
       fi
       echo
     done
