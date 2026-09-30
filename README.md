@@ -221,6 +221,10 @@ file, with project-level settings winning over global ones:
 built-in fallback               ->  tool=claude, model=sonnet, effort=high, layout=tiled
 ```
 
+`baton.conf` is your own local copy and is git-ignored; `install.sh` creates it
+from `baton.conf.example` if it doesn't exist yet. Without one, baton just uses
+the built-in fallbacks.
+
 Roles: `conductor`, `researcher`, `planner`, `principal`, `implementer`,
 `reviewer`. `tool` is `claude`, `codex`, or `omp` - which CLI agent runs
 that role; `model` is an alias/model name meaningful to that tool (e.g.
