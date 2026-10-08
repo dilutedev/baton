@@ -627,9 +627,8 @@ configure_roles_interactively() {
 #           no system-prompt flag, so the persona is typed in as the pane's
 #           first message instead (see spawn_pipeline_panes phase 2).
 #   omp:    has --model/--thinking flags matching baton's own vocabulary,
-#           but --append-system-prompt takes its value inline rather than a
-#           file, and personas run tens of KB - typed as the first message
-#           for the same reason as codex.
+#           and --append-system-prompt accepts a file path, so the persona
+#           loads before the pane's first turn like claude's.
 #
 # None of the three get `--resume`/`--session-id`/equivalent: baton no
 # longer tries to reconnect a role to its previous underlying conversation
@@ -647,7 +646,15 @@ tool_launch_args() {
     printf '%s\n' -c "model=$model" -c "model_reasoning_effort=$effort"
     ;;
   omp)
-    printf '%s\n' --model "$model" --thinking "$effort"
+    printf '%s\n' --model "$model" --thinking "$effort" --hide-thinking --config "$ROOT_DIR/omp.config.yml" --append-system-prompt "$prompt_file"
+    # omp's built-in `task` tool spawns subagents; the conductor's prompt
+    # forbids them but kimi models use it anyway (doing a role's work in-pane
+    # instead of dispatching it), so don't offer it.
+    case "$prompt_file" in
+    */conductor.prompt.md)
+      printf '%s\n' --tools read,bash,edit,eval,glob,grep,wait,todo,web_search,write
+      ;;
+    esac
     ;;
   *)
     echo "baton: unknown tool '$tool' (use claude, codex, or omp)" >&2
@@ -661,7 +668,7 @@ tool_launch_args() {
 # pane's first message instead.
 tool_needs_typed_persona() {
   case "$1" in
-  claude) return 1 ;;
+  claude | omp) return 1 ;;
   *) return 0 ;;
   esac
 }
@@ -945,9 +952,9 @@ spawn_pipeline_panes() {
 # of conversation history (see prompts/*.prompt.md's "Which backlog?"/Inputs
 # sections), so the durable side of a resume already works regardless of
 # which tool/model a role comes back up under. But nothing about *launching*
-# a pane is itself a turn: a claude-tool pane's persona loads via a real
+# a pane is itself a turn: a claude/omp-tool pane's persona loads via a real
 # system-prompt flag (no message, so the pane just sits idle), and a
-# codex/omp-tool pane's first typed message is its own persona file, not a
+# codex-tool pane's first typed message is its own persona file, not a
 # task. Without this, "the same workflow resumes" would depend on the human
 # remembering to type something like "continue" into the conductor pane
 # after every `baton resume` - this makes that automatic.

@@ -1,0 +1,4 @@
+# Per-run omp overlay passed by bin/baton: no splash/tips/MCP mount spam/update notice in role panes.
+startup:
+  quiet: true
+  checkUpdate: false
