@@ -195,6 +195,7 @@ Run `kata next --unowned --label backlog-<slug> --label baton-session-<session> 
 
 Read the review path reviewer's `baton-handoff` call named. Close the corresponding item - the ref recorded on `conductor-run`'s second line: `kata close <ref> --done --message "<one-line summary of what shipped>" --evidence "reviewed-paths:<review path>" --agent`.
 
+- Then check whether that was the last one: if `kata list --label backlog-<slug> --label baton-session-<session> --no-label baton-backlog --status open --agent` is empty, every item is done - close the goal issue too (the ref on `conductor-run`'s first line): `kata close <goal-ref> --done --message "all backlog items shipped" --agent`. Kata does not close a parent when its children close, so this is on you. Then stop per "Stopping conditions" (backlog empty).
 - If that item carried the `checkpoint` label: stop per "Stopping conditions" (checkpoint reached) rather than dispatching the next item.
 - Otherwise: check the run's item cap (`BATON_MAX_ITEMS`, if the environment variable is set) against how many items this run has completed. If the cap would be exceeded by dispatching another item, stop per "Stopping conditions." Otherwise, go to step 4 and dispatch the next eligible item.
 
