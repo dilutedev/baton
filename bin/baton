@@ -994,6 +994,19 @@ nudge_conductor() {
   herdr agent prompt "$agent_name" "$message" >/dev/null 2>&1
 }
 
+# start_courier <marker_dir> -> launches bin/baton-courier for this
+# instance in the background unless one is already running. It has to live
+# outside every pane (see that script's header), and it exits on its own
+# once the instance's tab is gone, so `stop`/`remove` needn't kill it.
+start_courier() {
+  local marker_dir="$1" pid
+  pid="$(cat "$marker_dir/courier.pid" 2>/dev/null || true)"
+  if [ -n "$pid" ] && ps -p "$pid" -o command= 2>/dev/null | grep -q baton-courier; then
+    return 0
+  fi
+  nohup "$BIN_DIR/baton-courier" "$marker_dir" </dev/null >>"$marker_dir/courier.log" 2>&1 &
+}
+
 attach_or_launch() {
   local tab_id="$1"
   herdr tab focus "$tab_id" >/dev/null
@@ -1055,6 +1068,7 @@ cmd_start() {
   tab_id="${result##* }"
   echo "$workspace_id" >"$marker_dir/workspace_id"
   echo "$tab_id" >"$marker_dir/tab_id"
+  start_courier "$marker_dir"
 
   echo "baton: started '$name' ($instance) for $dir"
   echo "  marker dir: $marker_dir"
@@ -1075,6 +1089,7 @@ cmd_attach() {
     echo "baton: instance '$instance' isn't running - try 'baton resume ${REF:-$instance} $DIR'" >&2
     exit 1
   fi
+  start_courier "$marker_dir"
   attach_or_launch "$tab_id"
 }
 
@@ -1098,6 +1113,7 @@ cmd_resume() {
   existing_tab="$(cat "$marker_dir/tab_id" 2>/dev/null || true)"
   if [ -n "$existing_tab" ] && herdr tab get "$existing_tab" >/dev/null 2>&1; then
     echo "baton: instance '$instance' is already running - attaching instead of resuming"
+    start_courier "$marker_dir"
     attach_or_launch "$existing_tab"
     return $?
   fi
@@ -1112,6 +1128,10 @@ cmd_resume() {
   tab_id="${result##* }"
   echo "$workspace_id" >"$marker_dir/workspace_id"
   echo "$tab_id" >"$marker_dir/tab_id"
+  # Fresh panes aren't mid-item, so nothing they were armed on before the
+  # stop should hold their queues back now.
+  rm -f "$marker_dir/.dispatch-state/"*.armed
+  start_courier "$marker_dir"
   echo "baton: resumed '$name' ($instance) for $DIR"
 
   nudge_conductor "$marker_dir"

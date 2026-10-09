@@ -7,8 +7,8 @@ Baton is a [herdr](https://herdr.dev/)-based runner. Each role is its own agent
 process in its own herdr pane, running with a fixed system prompt (its
 "persona") for the life of the pane. Roles are independent: each picks its own
 tool (`claude`, `codex`, or `omp`), model, and effort level. The moment a role
-finishes a turn, `bin/baton-handoff` types the next role's input into its
-pane, so a run can go from a one-line goal to a backlog of shipped, reviewed
+finishes a turn, `bin/baton-handoff` queues the next role's input and
+`bin/baton-courier` types it into that role's pane, so a run can go from a one-line goal to a backlog of shipped, reviewed
 changes largely unattended.
 
 ```
@@ -359,9 +359,17 @@ on a laptop, six equal panes are each too small to read comfortably. Two fixes:
   - It picks the next role: an explicit `--route`, or the fixed order
     researcher → planner → principal → implementer → reviewer → conductor →
     researcher.
-  - It sends the payload into that pane with `herdr agent prompt`.
-  - It's a plain shell command, so it works the same for `claude`, `codex`, and
+  - It queues the payload for that role in
+    `.dispatch-state/<role>.queue` (bounces go to the front). It never calls
+    herdr itself, so it works the same inside `claude`, `codex` (sandboxed), and
     `omp` panes.
+- **`bin/baton-courier`** runs in the background for each instance (`baton
+  start`, `resume` and `attach` launch it; it exits once the instance's tab is
+  gone). Every second it types each role's next queued payload into its pane
+  with `herdr agent prompt`, once that role has handed off its current item and
+  herdr reports its turn over. A pane switching to a different backlog item is
+  sent `/clear` first. This is what lets several items be in flight at once:
+  work for a busy role waits in its queue instead of interrupting it.
 - **`bin/baton-msg <role> "<text>"`** is fire-and-forget: it types text into
   another role's pane (for example the conductor poking a stuck implementer). It
   never waits for a reply and never advances the pipeline.
@@ -374,8 +382,8 @@ on a laptop, six equal panes are each too small to read comfortably. Two fixes:
   blocks the Stop twice with a reminder to finish the handoff. If a third turn
   still ends without one, it stops nagging and pings the conductor pane once, so
   a human notices the stall instead of the pipeline going quiet. Once a role has
-  handed off, it isn't nudged again until `baton-handoff` from the previous role
-  sends it new work, so idle turns don't trigger a repeat handoff. Manually-driven
+  handed off, it isn't nudged again until the courier delivers it new work, so
+  idle turns don't trigger a repeat handoff. Manually-driven
   chains (no `$BATON_MARKER_DIR/conductor-run`) are skipped, since a human is
   watching.
 - **`prompts/*.prompt.md`** are the six personas, loaded through each tool's

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # baton-handoff --status done|blocked [--route ROLE] "<payload>"
 # Signals that this role finished (or bounced) a turn of work, records that
-# durably, and forwards the payload straight into the next role's pane -
-# tool-agnostic, since it's invoked as a plain shell command by whichever
-# agent (claude, codex, omp, ...) is running this role, unlike a Claude
-# Code Stop hook.
+# durably, and queues the payload for the next role's pane - tool-agnostic,
+# since it's invoked as a plain shell command by whichever agent (claude,
+# codex, omp, ...) is running this role, unlike a Claude Code Stop hook.
 #
 # If a conductor-dispatched backlog item is in flight ($BATON_MARKER_DIR
 # /conductor-run exists), the durable record is a kata comment on that item -
@@ -13,25 +12,27 @@
 # prompts/*.prompt.md's "Which backlog?"/routing notes) it falls back to the
 # original local marker file, $BATON_MARKER_DIR/<role>.<status>.
 #
+# This script never talks to herdr itself: it only appends to
+# .dispatch-state/<target>.queue, and bin/baton-courier (started by
+# `baton start`/`resume`/`attach`, outside any agent's sandbox) types each
+# queued payload into its pane once that role is free. Agents run this from
+# inside their own tool sandboxes - codex's can't reach herdr's socket at
+# all - and a role is still mid-turn while running it, so it can't be the
+# one to deliver anything.
+#
 # This is a real pipeline handoff, not the fire-and-forget baton-msg -
 # see that script and each prompt's Ad hoc messaging section.
 #
-# hooks/baton-dispatch.sh (Claude Code-only Stop hook) no longer does any
-# forwarding - it only nags a Claude pane that ended its turn without
-# calling this script, using the timestamp this script drops in
-# .dispatch-state/ to tell whether one happened since its last check.
+# hooks/baton-dispatch.sh (Claude Code-only Stop hook) does no forwarding -
+# it only nags a Claude pane that ended its turn without calling this
+# script, using the timestamp this script drops in .dispatch-state/ to tell
+# whether one happened since its last check.
 set -euo pipefail
 
 status=""
 route=""
-pull=""
 while [ $# -gt 0 ]; do
   case "$1" in
-  --pull)
-    # Internal: see schedule_pull below.
-    pull=1
-    shift
-    ;;
   --status)
     status="${2:?--status needs an argument}"
     shift 2
@@ -50,21 +51,19 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -z "$pull" ]; then
-  case "$status" in
-  done | blocked) : ;;
-  *)
-    echo "baton-handoff: usage: baton-handoff --status done|blocked [--route ROLE] <payload>" >&2
-    exit 1
-    ;;
-  esac
+case "$status" in
+done | blocked) : ;;
+*)
+  echo "baton-handoff: usage: baton-handoff --status done|blocked [--route ROLE] <payload>" >&2
+  exit 1
+  ;;
+esac
 
-  payload="$*"
-  [ -n "$payload" ] || {
-    echo "baton-handoff: usage: baton-handoff --status done|blocked [--route ROLE] <payload>" >&2
-    exit 1
-  }
-fi
+payload="$*"
+[ -n "$payload" ] || {
+  echo "baton-handoff: usage: baton-handoff --status done|blocked [--route ROLE] <payload>" >&2
+  exit 1
+}
 
 [ -n "${BATON_MARKER_DIR:-}" ] || {
   echo "baton-handoff: BATON_MARKER_DIR is not set" >&2
@@ -92,39 +91,9 @@ next_role_for() {
 target="${route:-$(next_role_for "$BATON_ROLE")}"
 state_dir="$BATON_MARKER_DIR/.dispatch-state"
 
-agent_for() {
-  local agents_file="$BATON_MARKER_DIR/agents.map"
-  [ -f "$agents_file" ] || return 0
-  awk -F'\t' -v r="$1" '$1==r{print $2}' "$agents_file"
-}
-
-flatten() {
-  echo "$1" | tr '\n\t' '  ' | sed -E 's/[[:space:]]+$//'
-}
-
-# forward_payload <role> <payload> -> types payload into that role's pane.
-# Mirrors hooks/baton-dispatch.sh's forward_payload (kept in sync manually).
-forward_payload() {
-  local role="$1" text="$2"
-  [ -n "$role" ] || return 0
-
-  local agent_name
-  agent_name="$(agent_for "$role")"
-  [ -n "$agent_name" ] || return 0
-
-  # Deliberately doesn't `herdr agent focus` the target - a handoff can land
-  # while the human is looking at an unrelated pane, and stealing focus
-  # every time any role completes a turn was yanking them away from what
-  # they were actually doing.
-  # A failure (pane gone, agent blocked on a prompt) must not abort the
-  # rest of the handoff - the caller still needs crediting and its queue
-  # still needs pulling - so warn instead.
-  herdr agent prompt "$agent_name" "$(flatten "$text")" >/dev/null 2>&1 ||
-    echo "baton-handoff: could not prompt $role ($agent_name)" >&2
-}
-
-# Serializes every read-modify-write of .dispatch-state/ below - two roles
-# can hand off at the same moment, and a --pull can wake up mid-handoff.
+# Serializes every read-modify-write of .dispatch-state/ - two roles can
+# hand off at the same moment, and the courier can be mid-delivery. Same
+# lock as bin/baton-courier's (kept in sync manually).
 lock_dir="$state_dir/.lock"
 take_lock() {
   mkdir -p "$state_dir"
@@ -132,40 +101,14 @@ take_lock() {
   trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
 }
 
-# A role is busy from the moment work is forwarded into it
-# (<role>.<item>.armed) until it hands off, and while a queued item is
-# waiting to be pulled into it (<role>.pending). The conductor is never
-# busy - it only books PASSes and bounces, and doesn't hand off after the
-# last one.
-role_busy() {
-  local role="$1" item=""
-  [ "$role" != "conductor" ] || return 1
-  [ ! -e "$state_dir/$role.pending" ] || return 0
-  [ -f "$state_dir/$role.item" ] && item="$(cat "$state_dir/$role.item")"
-  [ -n "$item" ] && [ -e "$state_dir/$role.$item.armed" ]
-}
-
-# deliver <role> <item> <payload> -> makes <item> that role's current work
-# and forwards the payload, clearing the pane first when it switches items
-# so the previous item's turns don't ride along.
-deliver() {
-  local role="$1" item="$2" text="$3" previous=""
-  [ -f "$state_dir/$role.item" ] && previous="$(cat "$state_dir/$role.item")"
-  echo "$item" >"$state_dir/$role.item"
-  touch "$state_dir/$role.$item.armed"
-  if [ "$role" != "conductor" ] && [ -n "$previous" ] && [ "$previous" != "$item" ]; then
-    forward_payload "$role" "/clear"
-  fi
-  forward_payload "$role" "$text"
-}
-
-# enqueue <role> <item> <payload> front|back -> one `item<TAB>payload` line
-# in <role>.queue. Bounces go to the front: they unblock an item already
-# further down the pipeline.
+# enqueue <item> -> one `item<TAB>payload` line in $target's queue, item
+# empty on a manually-driven chain. Bounces go to the front: they unblock
+# an item already further down the pipeline.
 enqueue() {
-  local file="$state_dir/$1.queue" line
-  line="$2	$(flatten "$3")"
-  if [ "$4" = "front" ] && [ -s "$file" ]; then
+  [ -n "$target" ] || return 0
+  local file="$state_dir/$target.queue" line
+  line="$1	$(echo "$payload" | tr '\n\t' '  ' | sed -E 's/[[:space:]]+$//')"
+  if [ "$status" = "blocked" ] && [ -s "$file" ]; then
     { printf '%s\n' "$line"; cat "$file"; } >"$file.tmp"
     mv "$file.tmp" "$file"
   else
@@ -173,45 +116,13 @@ enqueue() {
   fi
 }
 
-# The caller is mid-turn (it's running this script), so its next queued
-# item can't be typed in yet. Reserve the role and leave delivery to a
-# detached `baton-handoff --pull`, which waits for the pane to go idle
-# first. setsid so it outlives the agent tearing down its tool call's
-# process group.
-schedule_pull() {
-  [ -s "$state_dir/$BATON_ROLE.queue" ] || return 0
-  command -v herdr >/dev/null 2>&1 || return 0
-  [ -n "$(agent_for "$BATON_ROLE")" ] || return 0
-  touch "$state_dir/$BATON_ROLE.pending"
-  perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$BASH" "$0" --pull </dev/null >/dev/null 2>&1 &
-}
-
-if [ -n "$pull" ]; then
-  agent_name="$(agent_for "$BATON_ROLE")"
-  if [ -z "$agent_name" ] ||
-    ! herdr agent wait "$agent_name" --until idle --until done --timeout 3600000 >/dev/null 2>&1; then
-    rm -f "$state_dir/$BATON_ROLE.pending"
-    exit 0
-  fi
-  take_lock
-  queue_file="$state_dir/$BATON_ROLE.queue"
-  if [ -s "$queue_file" ]; then
-    entry="$(head -n 1 "$queue_file")"
-    tail -n +2 "$queue_file" >"$queue_file.tmp"
-    mv "$queue_file.tmp" "$queue_file"
-    deliver "$BATON_ROLE" "${entry%%	*}" "${entry#*	}"
-  fi
-  rm -f "$state_dir/$BATON_ROLE.pending"
-  exit 0
-fi
-
 body_tail="$payload"
 [ -n "$route" ] && body_tail="route: $route
 $payload"
 
 conductor_run="$BATON_MARKER_DIR/conductor-run"
 if [ -f "$conductor_run" ] && command -v kata >/dev/null 2>&1; then
-  # Each role works the item the last handoff into it carried
+  # Each role works the item the last delivery into it carried
   # (<role>.item), not whatever conductor-run says is newest - the
   # conductor may have dispatched other items since. The conductor itself
   # always hands off conductor-run's item: that's how it dispatches.
@@ -229,16 +140,7 @@ $body_tail" \
     take_lock
     date +%s >"$state_dir/$BATON_ROLE.$item_ref.last_handoff"
     rm -f "$state_dir/$BATON_ROLE.$item_ref.stop_nudges" "$state_dir/$BATON_ROLE.$item_ref.armed"
-    if [ -n "$target" ]; then
-      if ! role_busy "$target"; then
-        deliver "$target" "$item_ref" "$payload"
-      elif [ "$status" = "blocked" ]; then
-        enqueue "$target" "$item_ref" "$payload" front
-      else
-        enqueue "$target" "$item_ref" "$payload" back
-      fi
-    fi
-    [ "$BATON_ROLE" = "conductor" ] || schedule_pull
+    enqueue "$item_ref"
 
     exit 0
   fi
@@ -246,4 +148,5 @@ fi
 
 mkdir -p "$BATON_MARKER_DIR"
 printf '%s\n' "$body_tail" >"$BATON_MARKER_DIR/$BATON_ROLE.$status"
-forward_payload "$target" "$payload"
+take_lock
+enqueue ""

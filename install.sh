@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-chmod +x "$ROOT_DIR/bin/baton" "$ROOT_DIR/bin/baton-msg" "$ROOT_DIR/bin/baton-handoff" \
+chmod +x "$ROOT_DIR/bin/baton" "$ROOT_DIR/bin/baton-msg" "$ROOT_DIR/bin/baton-handoff" "$ROOT_DIR/bin/baton-courier" \
   "$ROOT_DIR/hooks/baton-dispatch.sh"
 
 if [ ! -f "$ROOT_DIR/baton.conf" ]; then
