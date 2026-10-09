@@ -81,4 +81,21 @@ handoff principal --status blocked --route planner "question about i3"
 [ "$(head -n 1 "$state_dir/planner.queue")" = "i3	question about i3" ]
 [ "$(tail -n 1 "$state_dir/planner.queue")" = "i2	research i2" ]
 
+# A failed prompt (pane gone, agent blocked) doesn't abort the handoff:
+# it still credits the caller and still schedules its next queued item.
+printf '#!/bin/sh\n[ "$2" = prompt ] && exit 1\nexit 0\n' >"$test_root/bin/herdr"
+rm -rf "$state_dir"
+mkdir -p "$state_dir"
+echo i4 >"$state_dir/principal.item"
+touch "$state_dir/principal.i4.armed"
+printf 'i5\ti5 research\n' >"$state_dir/principal.queue"
+handoff principal --status done "design i4" 2>/dev/null
+[ ! -e "$state_dir/principal.i4.armed" ]
+[ -e "$state_dir/implementer.i4.armed" ]
+for _ in $(seq 50); do
+  [ -e "$state_dir/principal.pending" ] || break
+  sleep 0.1
+done
+[ "$(cat "$state_dir/principal.item")" = i5 ]
+
 printf 'handoff checks passed\n'

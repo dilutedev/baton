@@ -116,7 +116,11 @@ forward_payload() {
   # while the human is looking at an unrelated pane, and stealing focus
   # every time any role completes a turn was yanking them away from what
   # they were actually doing.
-  herdr agent prompt "$agent_name" "$(flatten "$text")" >/dev/null 2>&1
+  # A failure (pane gone, agent blocked on a prompt) must not abort the
+  # rest of the handoff - the caller still needs crediting and its queue
+  # still needs pulling - so warn instead.
+  herdr agent prompt "$agent_name" "$(flatten "$text")" >/dev/null 2>&1 ||
+    echo "baton-handoff: could not prompt $role ($agent_name)" >&2
 }
 
 # Serializes every read-modify-write of .dispatch-state/ below - two roles
