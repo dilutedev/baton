@@ -7,7 +7,7 @@ trap 'rm -rf -- "$test_root"' EXIT
 marker_dir="$test_root/marker"
 state_dir="$marker_dir/.dispatch-state"
 mkdir -p "$state_dir" "$test_root/bin" "$test_root/status"
-printf 'conductor\tconductor-agent\nresearcher\tresearcher-agent\n' >"$marker_dir/agents.map"
+printf 'conductor\tconductor-agent\nresearcher\tresearcher-agent\nimplementer\timplementer-agent\n' >"$marker_dir/agents.map"
 
 # herdr stub: `agent get` reports $test_root/status/<agent>, `agent prompt`
 # logs (or fails while $test_root/fail exists).
@@ -29,6 +29,7 @@ tick() {
 }
 status() { echo "$2" >"$test_root/status/$1"; }
 echo idle >"$test_root/status/conductor-agent"
+echo idle >"$test_root/status/implementer-agent"
 
 # Idle researcher, first item: delivered as-is, and it now owns and is armed on it.
 status researcher-agent idle
@@ -102,5 +103,29 @@ rm -f "$state_dir/researcher.i4.armed"
 tick
 [ "$(tail -n 1 "$test_root/prompts")" = "researcher-agent manual payload" ]
 [ "$(cat "$state_dir/researcher.item")" = i3 ]
+
+# Implementer builds one item at a time: taking one locks the build to it.
+printf 'b1\tdesign b1\n' >"$state_dir/implementer.queue"
+tick
+[ "$(tail -n 1 "$test_root/prompts")" = "implementer-agent design b1" ]
+[ "$(cat "$state_dir/build.item")" = b1 ]
+
+# Handed b1 to reviewer, but b1 hasn't passed: b2's design waits, while
+# b1's CHANGES REQUIRED gets through even though it's queued behind it.
+rm "$state_dir/implementer.b1.armed"
+printf 'b2\tdesign b2\nb1\tchanges for b1\n' >"$state_dir/implementer.queue"
+tick
+[ "$(tail -n 1 "$test_root/prompts")" = "implementer-agent changes for b1" ]
+[ "$(cat "$state_dir/implementer.queue")" = "b2	design b2" ]
+rm "$state_dir/implementer.b1.armed"
+tick
+[ "$(tail -n 1 "$test_root/prompts")" = "implementer-agent changes for b1" ]
+
+# b1 passed (baton-handoff drops the lock): b2 goes in, cleared first.
+rm "$state_dir/build.item"
+tick
+[ "$(tail -n 2 "$test_root/prompts")" = "implementer-agent /clear
+implementer-agent design b2" ]
+[ "$(cat "$state_dir/build.item")" = b2 ]
 
 printf 'courier checks passed\n'

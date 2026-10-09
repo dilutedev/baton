@@ -51,6 +51,19 @@ handoff principal --status blocked --route planner "question about i3"
 [ "$(head -n 1 "$state_dir/planner.queue")" = "i3	question about i3" ]
 [ "$(tail -n 1 "$state_dir/planner.queue")" = "abcd	research two" ]
 
+# Anything for the conductor says which item it's about, since several can
+# be in flight.
+echo efgh >"$state_dir/reviewer.item"
+echo efgh >"$state_dir/build.item"
+handoff reviewer --status blocked --route conductor "note.md"
+[ "$(cat "$state_dir/conductor.queue")" = "efgh	item efgh: note.md" ]
+[ -e "$state_dir/build.item" ]
+
+# A reviewer PASS ends the item's build, freeing implementer for the next one.
+handoff reviewer --status done --route conductor "review.md"
+[ "$(tail -n 1 "$state_dir/conductor.queue")" = "efgh	item efgh: review.md" ]
+[ ! -e "$state_dir/build.item" ]
+
 # A manually-driven chain (no conductor-run) keeps its marker file and
 # queues with no item.
 rm "$marker_dir/conductor-run"

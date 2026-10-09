@@ -103,11 +103,13 @@ take_lock() {
 
 # enqueue <item> -> one `item<TAB>payload` line in $target's queue, item
 # empty on a manually-driven chain. Bounces go to the front: they unblock
-# an item already further down the pipeline.
+# an item already further down the pipeline. The conductor can have
+# several items in flight, so its payloads say which one they're about.
 enqueue() {
   [ -n "$target" ] || return 0
-  local file="$state_dir/$target.queue" line
-  line="$1	$(echo "$payload" | tr '\n\t' '  ' | sed -E 's/[[:space:]]+$//')"
+  local file="$state_dir/$target.queue" line text="$payload"
+  [ "$target" != "conductor" ] || [ -z "$1" ] || text="item $1: $payload"
+  line="$1	$(echo "$text" | tr '\n\t' '  ' | sed -E 's/[[:space:]]+$//')"
   if [ "$status" = "blocked" ] && [ -s "$file" ]; then
     { printf '%s\n' "$line"; cat "$file"; } >"$file.tmp"
     mv "$file.tmp" "$file"
@@ -140,6 +142,12 @@ $body_tail" \
     take_lock
     date +%s >"$state_dir/$BATON_ROLE.$item_ref.last_handoff"
     rm -f "$state_dir/$BATON_ROLE.$item_ref.stop_nudges" "$state_dir/$BATON_ROLE.$item_ref.armed"
+    # A reviewer PASS ends this item's build - the courier holds every other
+    # item back from implementer until then (see bin/baton-courier).
+    if [ "$BATON_ROLE" = "reviewer" ] && [ "$status" = "done" ] &&
+      [ "$(cat "$state_dir/build.item" 2>/dev/null)" = "$item_ref" ]; then
+      rm -f "$state_dir/build.item"
+    fi
     enqueue "$item_ref"
 
     exit 0

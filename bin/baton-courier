@@ -20,6 +20,13 @@
 # item's turns don't ride along. A failed prompt leaves the entry queued
 # for the next tick.
 #
+# Implementer builds one item at a time - everything shares one checkout,
+# and an item's fixes after CHANGES REQUIRED must land on its own branch
+# before the next item's work starts. Delivering an item to implementer
+# records it in build.item; until reviewer passes it (bin/baton-handoff
+# removes the file), implementer only gets that item's entries, wherever
+# they sit in its queue, and the rest wait.
+#
 # --once runs a single pass and exits (tests, or a manual nudge).
 set -euo pipefail
 
@@ -59,13 +66,26 @@ except Exception:
 ' || true
 }
 
-# deliver_next <role> <agent> -> types the head of <role>.queue into the
+# next_line <role> -> the line number in <role>.queue to deliver next: the
+# head, except for implementer mid-build (only its build item's entries),
+# where it prints nothing if none is queued.
+next_line() {
+  local build=""
+  [ "$1" = "implementer" ] && build="$(cat "$state_dir/build.item" 2>/dev/null || true)"
+  if [ -z "$build" ]; then
+    echo 1
+    return
+  fi
+  awk -F'\t' -v b="$build" '$1==b{print NR; exit}' "$state_dir/$1.queue"
+}
+
+# deliver_next <role> <agent> <line> -> types that queue entry into the
 # pane, then records it as that role's current, armed item (an entry with
 # no item - a manually-driven chain - only gets typed in).
 deliver_next() {
-  local role="$1" agent="$2" file="$state_dir/$1.queue"
+  local role="$1" agent="$2" line="$3" file="$state_dir/$1.queue"
   local entry item text previous=""
-  entry="$(head -n 1 "$file")"
+  entry="$(sed -n "${line}p" "$file")"
   item="${entry%%	*}"
   text="${entry#*	}"
   [ -f "$state_dir/$role.item" ] && previous="$(cat "$state_dir/$role.item")"
@@ -79,23 +99,26 @@ deliver_next() {
   # they were actually doing.
   herdr agent prompt "$agent" "$text" </dev/null >/dev/null 2>&1 || return 0
 
-  tail -n +2 "$file" >"$file.tmp"
+  sed "${line}d" "$file" >"$file.tmp"
   mv "$file.tmp" "$file"
   if [ -n "$item" ]; then
     echo "$item" >"$state_dir/$role.item"
     touch "$state_dir/$role.$item.armed"
+    [ "$role" != "implementer" ] || echo "$item" >"$state_dir/build.item"
   fi
 }
 
 tick() {
   [ -f "$agents_file" ] || return 0
   take_lock
-  local role agent
+  local role agent line
   while IFS=$'\t' read -r role agent <&3; do
     [ -n "$role" ] && [ -s "$state_dir/$role.queue" ] || continue
     ! role_busy "$role" || continue
+    line="$(next_line "$role")"
+    [ -n "$line" ] || continue
     case "$(agent_status "$agent")" in
-    idle | done) deliver_next "$role" "$agent" ;;
+    idle | done) deliver_next "$role" "$agent" "$line" ;;
     esac
   done 3<"$agents_file"
   drop_lock
