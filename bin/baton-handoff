@@ -110,7 +110,16 @@ $payload"
 
 conductor_run="$BATON_MARKER_DIR/conductor-run"
 if [ -f "$conductor_run" ] && command -v kata >/dev/null 2>&1; then
-  item_ref="$(sed -n '2p' "$conductor_run")"
+  state_dir="$BATON_MARKER_DIR/.dispatch-state"
+  # Each role works the item the last handoff into it carried
+  # (<role>.item), not whatever conductor-run says is newest - the
+  # conductor may have dispatched other items since. The conductor itself
+  # always hands off conductor-run's item: that's how it dispatches.
+  item_ref=""
+  if [ "$BATON_ROLE" != "conductor" ] && [ -f "$state_dir/$BATON_ROLE.item" ]; then
+    item_ref="$(cat "$state_dir/$BATON_ROLE.item")"
+  fi
+  [ -n "$item_ref" ] || item_ref="$(sed -n '2p' "$conductor_run")"
   if [ -n "$item_ref" ]; then
     kata comment "$item_ref" --teammate "$BATON_ROLE" \
       --body "status: $status
@@ -119,11 +128,13 @@ $body_tail" \
 
     forward_payload
 
-    state_dir="$BATON_MARKER_DIR/.dispatch-state"
     mkdir -p "$state_dir"
     date +%s >"$state_dir/$BATON_ROLE.$item_ref.last_handoff"
     rm -f "$state_dir/$BATON_ROLE.$item_ref.stop_nudges" "$state_dir/$BATON_ROLE.$item_ref.armed"
-    [ -z "$target" ] || touch "$state_dir/$target.$item_ref.armed"
+    if [ -n "$target" ]; then
+      echo "$item_ref" >"$state_dir/$target.item"
+      touch "$state_dir/$target.$item_ref.armed"
+    fi
 
     exit 0
   fi

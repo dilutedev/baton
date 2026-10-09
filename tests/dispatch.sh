@@ -34,4 +34,10 @@ echo 200 >"$state_dir/reviewer.abcd.last_handoff"
 [ -z "$(run_hook)" ]
 [ ! -e "$state_dir/reviewer.abcd.armed" ]
 
+# Conductor has moved on to another item; reviewer is still judged on its own.
+printf 'goal\nefgh\n' >"$marker_dir/conductor-run"
+echo abcd >"$state_dir/reviewer.item"
+touch "$state_dir/reviewer.abcd.armed"
+run_hook | grep -q 'backlog item abcd'
+
 printf 'dispatch checks passed\n'
