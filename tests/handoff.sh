@@ -40,4 +40,45 @@ handoff principal --status done "docs/design/efgh.md"
 [ "$(last_comment)" = efgh ]
 [ "$(cat "$state_dir/implementer.item")" = efgh ]
 
+# Queueing: from here on panes exist, and herdr logs what it's asked to do.
+rm -rf "$state_dir"
+for role in conductor researcher planner principal implementer reviewer; do
+  printf '%s\t%s-agent\n' "$role" "$role"
+done >"$marker_dir/agents.map"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/herdr.log"\n' "$test_root" >"$test_root/bin/herdr"
+
+# Researcher busy on i1: a second dispatch queues instead of interrupting it.
+printf 'goal\ni1\n' >"$marker_dir/conductor-run"
+handoff conductor --status done "i1 body"
+printf 'goal\ni2\n' >"$marker_dir/conductor-run"
+handoff conductor --status done "i2 body"
+[ "$(cat "$state_dir/researcher.item")" = i1 ]
+[ "$(cat "$state_dir/researcher.queue")" = "i2	i2 body" ]
+if grep -q 'i2 body' "$test_root/herdr.log"; then
+  echo "handoff: i2 was typed into a busy researcher" >&2
+  exit 1
+fi
+
+# Researcher hands i1 on, then pulls i2 once its pane is idle, clearing first.
+handoff researcher --status done "research i1"
+[ "$(cat "$state_dir/planner.item")" = i1 ]
+for _ in $(seq 50); do
+  [ -e "$state_dir/researcher.pending" ] || break
+  sleep 0.1
+done
+[ ! -e "$state_dir/researcher.pending" ]
+[ "$(cat "$state_dir/researcher.item")" = i2 ]
+[ -e "$state_dir/researcher.i2.armed" ]
+[ ! -s "$state_dir/researcher.queue" ]
+[ "$(tail -n 3 "$test_root/herdr.log")" = "agent wait researcher-agent --until idle --until done --timeout 3600000
+agent prompt researcher-agent /clear
+agent prompt researcher-agent i2 body" ]
+
+# Planner still busy on i1: done work queues at the back, bounces jump the line.
+handoff researcher --status done "research i2"
+echo i3 >"$state_dir/principal.item"
+handoff principal --status blocked --route planner "question about i3"
+[ "$(head -n 1 "$state_dir/planner.queue")" = "i3	question about i3" ]
+[ "$(tail -n 1 "$state_dir/planner.queue")" = "i2	research i2" ]
+
 printf 'handoff checks passed\n'
