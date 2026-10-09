@@ -8,8 +8,8 @@ process in its own herdr pane, running with a fixed system prompt (its
 "persona") for the life of the pane. Roles are independent: each picks its own
 tool (`claude`, `codex`, or `omp`), model, and effort level. The moment a role
 finishes a turn, `bin/baton-handoff` queues the next role's input and
-`bin/baton-courier` types it into that role's pane, so a run can go from a one-line goal to a backlog of shipped, reviewed
-changes largely unattended.
+`bin/baton-courier` types it into that role's pane, so a run can go from a
+one-line goal to a backlog of shipped, reviewed changes largely unattended.
 
 ```
 you ──goal──▶ conductor ──▶ researcher ──▶ planner ──▶ principal ──▶ implementer ──▶ reviewer
@@ -46,7 +46,7 @@ for you to review it, and only starts dispatching once you tell it to continue.
 
 | Role | Job |
 |---|---|
-| **conductor** | Turns a goal into a backlog, dispatches one item at a time, closes items on a reviewer PASS. The only role that touches the backlog. |
+| **conductor** | Turns a goal into a backlog, keeps up to 3 items in flight, closes items on a reviewer PASS. The only role that touches the backlog. |
 | **researcher** | Investigates how the current implementation works. |
 | **planner** | Writes a Planning Brief. |
 | **principal** | Produces an implementation design. |
@@ -199,13 +199,35 @@ Claude panes. Naming `DIR` to `baton` is already that trust decision. Without
 it, a Claude pane would stall on the dialog with nobody watching. Other tools
 handle their own approval prompts independently.
 
+### Several items in flight
+
+The conductor keeps up to 3 backlog items in flight instead of one. Each role
+still works on one item at a time, but not necessarily the same one: while
+implementer builds one item, researcher, planner and principal prepare the
+next ones. A handoff to a role that's still busy waits in that role's queue
+(`.dispatch-state/<role>.queue`) until `bin/baton-courier` can deliver it.
+
+- Implementer builds strictly one item at a time: once it takes an item, it
+  only gets that item's handoffs (fixes after CHANGES REQUIRED, answers to its
+  questions) until reviewer passes it. All panes share one checkout, so the
+  next item's build waits for this one's branch to be done.
+- `kata`'s `--blocked-by` still gates dispatch, so an item never starts while
+  something it depends on is in flight. Implementer re-checks each design
+  against the code before building, and bounces it to principal if it has gone
+  stale.
+- Design artifacts are staged. In a conductor-driven run, researcher, planner
+  and principal write their briefs and designs to
+  `.baton/s/<instance>/staging/<item>/` (gitignored, at the same relative
+  paths they'd have in the repo) instead of the checkout, which may be on
+  another item's branch. Implementer moves them into the repo on the item's own
+  branch and commits them with the code.
+- An item labeled `checkpoint` runs alone, so the run can pause after it.
+
 ### Mid-run `/clear`
 
-Between backlog items, the conductor sends `/clear` to the other five panes
-(see "Dispatching an item" in `prompts/conductor.prompt.md`) so one item's
-context doesn't leak into the next. `/clear` is Claude Code's own command. A
-role on another tool needs that tool's equivalent, and the prompts don't
-branch on this yet.
+When the courier hands a pane a different backlog item than the one it last
+worked on, it sends `/clear` first, so one item's context doesn't leak into
+the next. Claude, codex and omp all accept `/clear` while idle.
 
 ## Configuration
 
