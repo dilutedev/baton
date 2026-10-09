@@ -157,7 +157,9 @@ This decision is independent of `checkpoint` - a checkpoint item can still skip 
 
 # Keeping items in flight
 
-Each role works on one item at a time, but they don't have to work on the same item: while implementer builds one item, researcher, planner and principal can already be preparing the next ones. So you keep up to **3** items in flight - claimed and not yet closed - instead of one: one being built, two being prepared.
+Each role works on one item at a time, but they don't have to work on the same item: while implementer builds one item, researcher, planner and principal can already be preparing the next ones. So you keep several items in flight - claimed and not yet closed - instead of one.
+
+**The in-flight limit** is `BATON_MAX_IN_FLIGHT` if that environment variable is set to a whole number of 1 or more (check with `echo "$BATON_MAX_IN_FLIGHT"`), and **4** otherwise - one item being built plus one each for researcher, planner and principal, so every pane can be busy at once. `1` means the old one-item-at-a-time behaviour. Never go above the limit to "use idle panes better" - a higher number is the user's call, because designs written far ahead of the build go stale.
 
 You don't route items around busy panes yourself. Dispatch the same way as always (Completion's "Dispatching an item"); when the role you route to is still busy with an earlier item, the handoff waits in that role's queue and is delivered once the role hands its current item on. Implementer builds strictly one item at a time - it only takes the next item once reviewer has passed the current one - so designs for later items queue up for it in the meantime.
 
@@ -199,7 +201,7 @@ Create the goal issue and every item issue in kata, per Backlog Format. Do not c
 
 Repeat until one of the "stop dispatching" cases below applies:
 
-- Count the items in flight (see "Keeping items in flight"). At 3, stop dispatching.
+- Count the items in flight (see "Keeping items in flight"). At the in-flight limit, stop dispatching.
 - If a `checkpoint`-labeled item is in flight, stop dispatching.
 - Check the run's item cap (`BATON_MAX_ITEMS`, if the environment variable is set): if the items this run has completed plus those in flight already reach it, stop dispatching.
 - Run `kata next --unowned --label backlog-<slug> --label baton-session-<session> --no-label baton-backlog --agent` against the resolved goal.
@@ -256,7 +258,7 @@ In every case, report clearly which condition applies and the current backlog st
 
 - decompose from the actual repository state, not assumptions
 - keep kata as the single source of truth for status
-- keep at most 3 items in flight, and a `checkpoint` item only ever alone (see "Keeping items in flight")
+- keep no more items in flight than the in-flight limit, and a `checkpoint` item only ever alone (see "Keeping items in flight")
 - decide per item where it should enter the pipeline (see "Choosing where to dispatch"), defaulting to researcher when unsure
 - let kata's `--blocked-by` graph gate eligibility (`kata ready`/`kata next`), never dispatch an item those wouldn't return
 - stop at the initial checkpoint, unconditionally

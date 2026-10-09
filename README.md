@@ -46,7 +46,7 @@ for you to review it, and only starts dispatching once you tell it to continue.
 
 | Role | Job |
 |---|---|
-| **conductor** | Turns a goal into a backlog, keeps up to 3 items in flight, closes items on a reviewer PASS. The only role that touches the backlog. |
+| **conductor** | Turns a goal into a backlog, keeps several items in flight (see [Several items in flight](#several-items-in-flight)), closes items on a reviewer PASS. The only role that touches the backlog. |
 | **researcher** | Investigates how the current implementation works. |
 | **planner** | Writes a Planning Brief. |
 | **principal** | Produces an implementation design. |
@@ -201,20 +201,65 @@ handle their own approval prompts independently.
 
 ### Several items in flight
 
-The conductor keeps up to 3 backlog items in flight instead of one. Each role
-still works on one item at a time, but not necessarily the same one: while
-implementer builds one item, researcher, planner and principal prepare the
-next ones. A handoff to a role that's still busy waits in that role's queue
-(`.dispatch-state/<role>.queue`) until `bin/baton-courier` can deliver it.
+The pipeline works like an assembly line. Each role works on one item at a
+time, but not necessarily the same one: while implementer builds one item,
+researcher, planner and principal are already preparing the next ones. With a
+backlog of independent features F1, F2, F3, ...:
 
+```
+time →           t1    t2    t3    t4    t5    t6
+researcher       F1    F2    F3    F4    F5    F6
+planner                F1    F2    F3    F4    F5
+principal                    F1    F2    F3    F4
+build                              F1    F2    F3   (implementer + reviewer)
+```
+
+(In practice stages take different amounts of time and items can skip
+researcher or planner - see "Choosing where to dispatch" in
+`prompts/conductor.prompt.md` - so it's rarely this tidy.)
+
+The conductor claims up to **`BATON_MAX_IN_FLIGHT`** items (default **4**) at
+once and dispatches each as normal. A handoff to a role that's still busy
+waits in that role's queue (`.dispatch-state/<role>.queue`) until
+`bin/baton-courier` can deliver it. After each reviewer PASS, the conductor
+closes that item and claims the next one, so a 10-item backlog moves through
+four at a time until it's done.
+
+**Choosing the limit.** Four means one item being built plus one each for
+researcher, planner and principal, so every pane can be busy at once. The
+build stage (implementing, then review rounds) is usually the slowest, so
+designs finish faster than they're built and wait for implementer. The higher
+the limit, the further ahead of the build those designs are written, and the
+more likely the code has changed underneath them by the time they're built.
+
+| `BATON_MAX_IN_FLIGHT` | Behaviour |
+|---|---|
+| `1` | One item at a time through the whole pipeline. Slowest, no overlap at all. |
+| `2`-`3` | Some overlap; one or two design panes sit idle while an item is built. |
+| `4` (default) | Every pane can be busy; at most a design or two waits for the build. |
+| `5`+ | More designs queue up waiting for implementer and are more likely to go stale. Rarely worth it, since implementer still builds one at a time. |
+
+Set it in the environment of `baton start` or `baton resume` (it's passed into
+the panes, and a resume picks up the new value):
+
+```bash
+BATON_MAX_IN_FLIGHT=2 baton start .
+```
+
+**What keeps items from affecting each other:**
+
+- Dependencies: the conductor only dispatches what `kata next` returns, and
+  `--blocked-by` keeps an item out until everything it depends on is closed.
+  If every item depends on the one before it, nothing overlaps - correct, just
+  sequential. Independent items overlap fully.
 - Implementer builds strictly one item at a time: once it takes an item, it
   only gets that item's handoffs (fixes after CHANGES REQUIRED, answers to its
   questions) until reviewer passes it. All panes share one checkout, so the
   next item's build waits for this one's branch to be done.
-- `kata`'s `--blocked-by` still gates dispatch, so an item never starts while
-  something it depends on is in flight. Implementer re-checks each design
-  against the code before building, and bounces it to principal if it has gone
-  stale.
+- Stale designs: implementer re-checks each design against the code before
+  building, and bounces it to principal if it no longer fits.
+- Context: a pane is sent `/clear` whenever it switches to a different item
+  (see below).
 - Design artifacts are staged. In a conductor-driven run, researcher, planner
   and principal write their briefs and designs to
   `.baton/s/<instance>/staging/<item>/` (gitignored, at the same relative
@@ -222,6 +267,16 @@ next ones. A handoff to a role that's still busy waits in that role's queue
   another item's branch. Implementer moves them into the repo on the item's own
   branch and commits them with the code.
 - An item labeled `checkpoint` runs alone, so the run can pause after it.
+
+**Known limits:**
+
+- Researcher, planner and principal still *read* code in the shared checkout,
+  which is on whatever branch implementer is building. Staging only keeps
+  their *writes* off it.
+- `baton resume` with several items in flight: each role's unfinished turn is
+  lost when the run stopped, and the conductor's resume nudge only names the
+  most recently dispatched item. Check `kata list` and re-dispatch stuck items
+  if needed.
 
 ### Mid-run `/clear`
 
@@ -338,8 +393,9 @@ The conductor decomposes a goal into a backlog, but the backlog lives in
 The first time it sees a goal, the conductor writes the backlog and **stops**.
 Review or edit it in kata (`kata edit`, `kata label`, ...) and tell the
 conductor to continue. `kata list --label backlog-<slug> --agent` shows what
-`baton status` summarizes per run. If `BATON_MAX_ITEMS` is set in the
-environment, the conductor stops after that many items.
+`baton status` summarizes per run. If `BATON_MAX_ITEMS` is set when you run
+`baton start`/`resume`, the conductor stops after that many items (counting
+items still in flight, so it never starts more than that).
 
 ## Pane layout & readability
 
@@ -423,9 +479,17 @@ on a laptop, six equal panes are each too small to read comfortably. Two fixes:
 | `BATON_CONF` | you (optional) | Override the global `baton.conf` path |
 | `BATON_MODELS` | you (optional) | Override the `models.json` path |
 | `BATON_MAX_ITEMS` | you (optional) | Cap on backlog items the conductor completes in a run |
+| `BATON_MAX_IN_FLIGHT` | you (optional) | How many backlog items the conductor keeps in flight at once (default 4, `1` = one at a time). See [Several items in flight](#several-items-in-flight) |
+| `BATON_THINK` | you (optional) | `1` turns on autonomous mode, same as `baton start --think` |
+
+`BATON_MAX_ITEMS`, `BATON_MAX_IN_FLIGHT` and `BATON_THINK` are read when you
+run `baton start`/`resume` and passed into every pane (panes don't otherwise
+see the environment `baton` runs in). To change one mid-run, `baton stop` and
+`baton resume` with the new value.
 | `ZAI_API_KEY` | you (for `glm-*` models) | z.ai API key, see [Using z.ai / GLM models](#using-zai--glm-models) |
 
 ## Tests
 
 The scripts in `tests/` are plain bash with no framework; run one with
-`bash tests/<name>.sh` (`nudge`, `remove`, `status`).
+`bash tests/<name>.sh` (`courier`, `dispatch`, `env`, `handoff`, `nudge`,
+`remove`, `status`).

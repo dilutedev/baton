@@ -663,6 +663,20 @@ tool_launch_args() {
   esac
 }
 
+# run_env_flags -> `--env NAME=VALUE` pairs (one argument per line, like
+# tool_launch_args) for the run settings the role prompts read from the
+# environment: BATON_MAX_ITEMS, BATON_MAX_IN_FLIGHT, BATON_THINK. herdr's
+# server starts every pane, so a pane doesn't inherit the environment
+# `baton start`/`resume` runs in - without this, setting one of these on the
+# command line would silently do nothing. Only the ones that are set.
+run_env_flags() {
+  local name
+  for name in BATON_MAX_ITEMS BATON_MAX_IN_FLIGHT BATON_THINK; do
+    [ -n "${!name:-}" ] || continue
+    printf '%s\n' --env "$name=${!name}"
+  done
+}
+
 # tool_needs_typed_persona <tool> -> true if that tool has no system-prompt
 # launch flag, so spawn_pipeline_panes must type the persona in as the
 # pane's first message instead.
@@ -807,7 +821,7 @@ spawn_pipeline_panes() {
   local layout
   layout="$(resolve_layout "$dir")"
 
-  local role idx=0 pane_id
+  local role idx=0 pane_id line
   local pane_ids=() agent_names=() models=() efforts=() tools=()
   local workspace_id="" tab_id="" root_pane_id="" owns_workspace=""
   # Phase 1: create every pane and record what each role needs to launch
@@ -827,6 +841,7 @@ spawn_pipeline_panes() {
 
     local env_flags=(--env "PATH=$BIN_DIR:$PATH" --env "BATON_ROOT=$dir" \
       --env "BATON_MARKER_DIR=$marker_dir" --env "BATON_ROLE=$role")
+    while IFS= read -r line; do env_flags+=("$line"); done < <(run_env_flags)
     # z.ai GLM models need the same ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
     # override the `zai` shell function applies for interactive use - baton
     # calls the tool directly (never through that function), so it has to
