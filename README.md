@@ -119,6 +119,25 @@ export PATH="$HOME/.baton/bin:$PATH"
 
 </details>
 
+### Updating
+
+```sh
+baton update
+```
+
+This pulls the latest baton from GitHub into your install (the `~/.baton`
+checkout `baton` runs from) and lists the new commits. It only fast-forwards:
+
+- With uncommitted changes to baton's own files, it stops and lists them.
+  Commit or `git stash` them in `~/.baton` first. Your `baton.conf` is
+  git-ignored, so it never gets in the way.
+- If `~/.baton` is on a branch that doesn't track one on GitHub (or isn't on a
+  branch), it tells you to `git -C ~/.baton checkout main`.
+- If your local branch has commits GitHub doesn't, it stops instead of merging.
+
+Running instances keep the version they started with. To move one onto the
+update, `baton stop` it and `baton resume` it.
+
 ## Usage
 
 ```
@@ -129,6 +148,7 @@ baton resume [--yes] [REF] [DIR]     Relaunch a stopped instance's panes (fresh 
 baton stop [REF] [DIR]               Kill a running instance
 baton remove [REF] [DIR]             Stop and delete one instance's Baton files
 baton config [DIR]                   Show each role's resolved tool/model/effort/layout for DIR
+baton update                         Pull the latest baton from GitHub into this install
 ```
 
 `REF` is optional whenever `DIR` has exactly one instance. A run gets a short
@@ -492,4 +512,4 @@ see the environment `baton` runs in). To change one mid-run, `baton stop` and
 
 The scripts in `tests/` are plain bash with no framework; run one with
 `bash tests/<name>.sh` (`courier`, `dispatch`, `env`, `handoff`, `nudge`,
-`remove`, `status`).
+`remove`, `status`, `update`).
