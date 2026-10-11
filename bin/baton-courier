@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# baton-courier <marker_dir> [--once]
+# Delivers queued handoffs into role panes for one baton instance.
+#
+# bin/baton-handoff only appends to .dispatch-state/<role>.queue - it runs
+# inside the calling agent's tool sandbox (codex's can't reach herdr's
+# socket) while that agent is still mid-turn, so it can't type anything into
+# a pane itself. This process does, from outside any agent: `baton start`,
+# `resume` and `attach` launch it in the background, and it exits on its
+# own once the instance's tab or marker dir is gone.
+#
+# Every second, for each role with something queued, it delivers the head
+# of the queue once the role is free:
+# - not still working an item - <role>.<item>.armed is set from delivery
+#   until that role's baton-handoff (the conductor is exempt: it only books
+#   PASSes and bounces, and doesn't hand off after the last one), and
+# - its turn has actually ended - herdr reports it idle or done (not
+#   working, or blocked on a permission prompt).
+# Switching a pane to a different item clears it first, so the previous
+# item's turns don't ride along. A failed prompt leaves the entry queued
+# for the next tick.
+#
+# Implementer builds one item at a time - everything shares one checkout,
+# and an item's fixes after CHANGES REQUIRED must land on its own branch
+# before the next item's work starts. Delivering an item to implementer
+# records it in build.item; until reviewer passes it (bin/baton-handoff
+# removes the file), implementer only gets that item's entries, wherever
+# they sit in its queue, and the rest wait.
+#
+# --once runs a single pass and exits (tests, or a manual nudge).
+set -euo pipefail
+
+marker_dir="${1:?usage: baton-courier <marker_dir> [--once]}"
+once=""
+[ "${2:-}" = "--once" ] && once=1
+
+state_dir="$marker_dir/.dispatch-state"
+agents_file="$marker_dir/agents.map"
+
+# Same lock as bin/baton-handoff's (kept in sync manually).
+lock_dir="$state_dir/.lock"
+take_lock() {
+  mkdir -p "$state_dir"
+  until mkdir "$lock_dir" 2>/dev/null; do sleep 0.1; done
+  trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
+}
+drop_lock() {
+  rmdir "$lock_dir" 2>/dev/null || true
+  trap - EXIT
+}
+
+role_busy() {
+  local role="$1" item=""
+  [ "$role" != "conductor" ] || return 1
+  [ -f "$state_dir/$role.item" ] && item="$(cat "$state_dir/$role.item")"
+  [ -n "$item" ] && [ -e "$state_dir/$role.$item.armed" ]
+}
+
+agent_status() {
+  herdr agent get "$1" </dev/null 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin)["result"]["agent"]["agent_status"])
+except Exception:
+    pass
+' || true
+}
+
+# next_line <role> -> the line number in <role>.queue to deliver next: the
+# head, except for implementer mid-build (only its build item's entries),
+# where it prints nothing if none is queued.
+next_line() {
+  local build=""
+  [ "$1" = "implementer" ] && build="$(cat "$state_dir/build.item" 2>/dev/null || true)"
+  if [ -z "$build" ]; then
+    echo 1
+    return
+  fi
+  awk -F'\t' -v b="$build" '$1==b{print NR; exit}' "$state_dir/$1.queue"
+}
+
+# deliver_next <role> <agent> <line> -> types that queue entry into the
+# pane, then records it as that role's current, armed item (an entry with
+# no item - a manually-driven chain - only gets typed in).
+deliver_next() {
+  local role="$1" agent="$2" line="$3" file="$state_dir/$1.queue"
+  local entry item text previous=""
+  entry="$(sed -n "${line}p" "$file")"
+  item="${entry%%	*}"
+  text="${entry#*	}"
+  [ -f "$state_dir/$role.item" ] && previous="$(cat "$state_dir/$role.item")"
+
+  if [ -n "$item" ] && [ "$role" != "conductor" ] && [ -n "$previous" ] && [ "$previous" != "$item" ]; then
+    herdr agent prompt "$agent" "/clear" </dev/null >/dev/null 2>&1 || return 0
+  fi
+  # Deliberately doesn't `herdr agent focus` the target - a handoff can land
+  # while the human is looking at an unrelated pane, and stealing focus
+  # every time any role completes a turn was yanking them away from what
+  # they were actually doing.
+  herdr agent prompt "$agent" "$text" </dev/null >/dev/null 2>&1 || return 0
+
+  sed "${line}d" "$file" >"$file.tmp"
+  mv "$file.tmp" "$file"
+  if [ -n "$item" ]; then
+    echo "$item" >"$state_dir/$role.item"
+    touch "$state_dir/$role.$item.armed"
+    [ "$role" != "implementer" ] || echo "$item" >"$state_dir/build.item"
+  fi
+}
+
+tick() {
+  [ -f "$agents_file" ] || return 0
+  take_lock
+  local role agent line
+  while IFS=$'\t' read -r role agent <&3; do
+    [ -n "$role" ] && [ -s "$state_dir/$role.queue" ] || continue
+    ! role_busy "$role" || continue
+    line="$(next_line "$role")"
+    [ -n "$line" ] || continue
+    case "$(agent_status "$agent")" in
+    idle | done) deliver_next "$role" "$agent" "$line" ;;
+    esac
+  done 3<"$agents_file"
+  drop_lock
+}
+
+if [ -n "$once" ]; then
+  tick
+  exit 0
+fi
+
+echo "$$" >"$marker_dir/courier.pid"
+
+# Exit once the instance is gone: marker dir removed (`baton remove`), or
+# its tab closed (`baton stop`, or the user closing it) - checked every
+# 10s, and only after 3 misses in a row so a herdr hiccup doesn't kill it.
+ticks=0 misses=0
+while [ -d "$marker_dir" ]; do
+  tick
+  ticks=$((ticks + 1))
+  if [ $((ticks % 10)) = 0 ]; then
+    if herdr tab get "$(cat "$marker_dir/tab_id" 2>/dev/null)" </dev/null >/dev/null 2>&1; then
+      misses=0
+    else
+      misses=$((misses + 1))
+      [ "$misses" -lt 3 ] || break
+    fi
+  fi
+  sleep 1
+done

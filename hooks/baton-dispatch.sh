@@ -63,8 +63,11 @@ require_handoff_or_nudge() {
   local conductor_run="$BATON_MARKER_DIR/conductor-run"
   [ -f "$conductor_run" ] || return 0
 
-  local item_ref
-  item_ref="$(sed -n '2p' "$conductor_run")"
+  # The item this role was last handed (see bin/baton-handoff), falling
+  # back to conductor-run's for runs that predate per-role tracking.
+  local item_ref=""
+  [ -f "$STATE_DIR/$BATON_ROLE.item" ] && item_ref="$(cat "$STATE_DIR/$BATON_ROLE.item")"
+  [ -n "$item_ref" ] || item_ref="$(sed -n '2p' "$conductor_run")"
   [ -n "$item_ref" ] || return 0
 
   local handoff_file="$STATE_DIR/$BATON_ROLE.$item_ref.last_handoff"

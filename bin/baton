@@ -63,6 +63,7 @@ Usage:
   baton stop [REF] [DIR]               Kill a running instance
   baton remove [REF] [DIR]             Stop and delete an instance's Baton files
   baton config [DIR]                   Show each role's resolved tool/model/effort for DIR
+  baton update                         Pull the latest baton from GitHub into this install
 
 REF is optional when DIR has exactly one instance.
 
@@ -663,6 +664,20 @@ tool_launch_args() {
   esac
 }
 
+# run_env_flags -> `--env NAME=VALUE` pairs (one argument per line, like
+# tool_launch_args) for the run settings the role prompts read from the
+# environment: BATON_MAX_ITEMS, BATON_MAX_IN_FLIGHT, BATON_THINK. herdr's
+# server starts every pane, so a pane doesn't inherit the environment
+# `baton start`/`resume` runs in - without this, setting one of these on the
+# command line would silently do nothing. Only the ones that are set.
+run_env_flags() {
+  local name
+  for name in BATON_MAX_ITEMS BATON_MAX_IN_FLIGHT BATON_THINK; do
+    [ -n "${!name:-}" ] || continue
+    printf '%s\n' --env "$name=${!name}"
+  done
+}
+
 # tool_needs_typed_persona <tool> -> true if that tool has no system-prompt
 # launch flag, so spawn_pipeline_panes must type the persona in as the
 # pane's first message instead.
@@ -807,7 +822,7 @@ spawn_pipeline_panes() {
   local layout
   layout="$(resolve_layout "$dir")"
 
-  local role idx=0 pane_id
+  local role idx=0 pane_id line
   local pane_ids=() agent_names=() models=() efforts=() tools=()
   local workspace_id="" tab_id="" root_pane_id="" owns_workspace=""
   # Phase 1: create every pane and record what each role needs to launch
@@ -827,6 +842,7 @@ spawn_pipeline_panes() {
 
     local env_flags=(--env "PATH=$BIN_DIR:$PATH" --env "BATON_ROOT=$dir" \
       --env "BATON_MARKER_DIR=$marker_dir" --env "BATON_ROLE=$role")
+    while IFS= read -r line; do env_flags+=("$line"); done < <(run_env_flags)
     # z.ai GLM models need the same ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
     # override the `zai` shell function applies for interactive use - baton
     # calls the tool directly (never through that function), so it has to
@@ -994,6 +1010,19 @@ nudge_conductor() {
   herdr agent prompt "$agent_name" "$message" >/dev/null 2>&1
 }
 
+# start_courier <marker_dir> -> launches bin/baton-courier for this
+# instance in the background unless one is already running. It has to live
+# outside every pane (see that script's header), and it exits on its own
+# once the instance's tab is gone, so `stop`/`remove` needn't kill it.
+start_courier() {
+  local marker_dir="$1" pid
+  pid="$(cat "$marker_dir/courier.pid" 2>/dev/null || true)"
+  if [ -n "$pid" ] && ps -p "$pid" -o command= 2>/dev/null | grep -q baton-courier; then
+    return 0
+  fi
+  nohup "$BIN_DIR/baton-courier" "$marker_dir" </dev/null >>"$marker_dir/courier.log" 2>&1 &
+}
+
 attach_or_launch() {
   local tab_id="$1"
   herdr tab focus "$tab_id" >/dev/null
@@ -1055,6 +1084,7 @@ cmd_start() {
   tab_id="${result##* }"
   echo "$workspace_id" >"$marker_dir/workspace_id"
   echo "$tab_id" >"$marker_dir/tab_id"
+  start_courier "$marker_dir"
 
   echo "baton: started '$name' ($instance) for $dir"
   echo "  marker dir: $marker_dir"
@@ -1075,6 +1105,7 @@ cmd_attach() {
     echo "baton: instance '$instance' isn't running - try 'baton resume ${REF:-$instance} $DIR'" >&2
     exit 1
   fi
+  start_courier "$marker_dir"
   attach_or_launch "$tab_id"
 }
 
@@ -1098,6 +1129,7 @@ cmd_resume() {
   existing_tab="$(cat "$marker_dir/tab_id" 2>/dev/null || true)"
   if [ -n "$existing_tab" ] && herdr tab get "$existing_tab" >/dev/null 2>&1; then
     echo "baton: instance '$instance' is already running - attaching instead of resuming"
+    start_courier "$marker_dir"
     attach_or_launch "$existing_tab"
     return $?
   fi
@@ -1112,6 +1144,10 @@ cmd_resume() {
   tab_id="${result##* }"
   echo "$workspace_id" >"$marker_dir/workspace_id"
   echo "$tab_id" >"$marker_dir/tab_id"
+  # Fresh panes aren't mid-item, so nothing they were armed on before the
+  # stop should hold their queues back now.
+  rm -f "$marker_dir/.dispatch-state/"*.armed
+  start_courier "$marker_dir"
   echo "baton: resumed '$name' ($instance) for $DIR"
 
   nudge_conductor "$marker_dir"
@@ -1307,6 +1343,48 @@ cmd_status() {
   [ "$found" = "1" ] || echo "baton: no instances for $dir"
 }
 
+# cmd_update -> fast-forwards the git checkout this script runs from
+# (ROOT_DIR, normally ~/.baton) to its upstream branch, so updating doesn't
+# mean cd'ing there and pulling by hand. Deliberately conservative: refuses
+# on local edits to tracked files, a detached HEAD, or a branch with no
+# upstream, and never merges or rebases - every case it won't handle is one
+# where pulling could silently lose or tangle something.
+cmd_update() {
+  local git_dir=(git -C "$ROOT_DIR") branch before after
+  "${git_dir[@]}" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+    echo "baton: $ROOT_DIR isn't a git checkout, so there's nothing to update - reinstall with git clone" >&2
+    exit 1
+  }
+  if [ -n "$("${git_dir[@]}" status --porcelain --untracked-files=no)" ]; then
+    echo "baton: $ROOT_DIR has local changes - commit or stash them first:" >&2
+    "${git_dir[@]}" status --short --untracked-files=no >&2
+    exit 1
+  fi
+  branch="$("${git_dir[@]}" symbolic-ref --quiet --short HEAD)" || {
+    echo "baton: $ROOT_DIR isn't on a branch - run: git -C $ROOT_DIR checkout main" >&2
+    exit 1
+  }
+  "${git_dir[@]}" rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1 || {
+    echo "baton: branch '$branch' in $ROOT_DIR doesn't track a remote branch - run: git -C $ROOT_DIR checkout main" >&2
+    exit 1
+  }
+
+  before="$("${git_dir[@]}" rev-parse HEAD)"
+  "${git_dir[@]}" pull --ff-only --quiet || {
+    echo "baton: couldn't fast-forward '$branch' in $ROOT_DIR (it has commits upstream doesn't) - sort it out with git there" >&2
+    exit 1
+  }
+  after="$("${git_dir[@]}" rev-parse HEAD)"
+
+  if [ "$before" = "$after" ]; then
+    echo "baton: already up to date ($branch at $("${git_dir[@]}" rev-parse --short HEAD))"
+    return 0
+  fi
+  echo "baton: updated $ROOT_DIR ($branch):"
+  "${git_dir[@]}" log --oneline --no-decorate "$before..$after" | sed 's/^/  /'
+  echo "Running instances keep the version they started with until you 'baton stop' and 'baton resume' them."
+}
+
 cmd_config() {
   local dir="${1:-.}"
   dir="$(cd "$dir" && pwd)"
@@ -1355,6 +1433,9 @@ config)
   require_deps
   shift
   cmd_config "$@"
+  ;;
+update)
+  cmd_update
   ;;
 *)
   usage

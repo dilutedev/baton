@@ -393,6 +393,18 @@ This is a real pipeline handoff - the Stop hook picks it up and opens or reveals
 
 ---
 
+# Staging (conductor-driven runs)
+
+In a conductor-driven run (`$BATON_MARKER_DIR/conductor-run` exists), several backlog items are in flight at once, and implementer may be building a different item on its own branch in this same checkout. So don't write your implementation design into the repository: write it to the same relative path under `$BATON_MARKER_DIR/staging/<item>/` instead, `<item>` being the contents of `$BATON_MARKER_DIR/.dispatch-state/principal.item`. For example `docs/design/2026-07-18-multi-tenant-support.md` becomes `$BATON_MARKER_DIR/staging/<item>/docs/design/2026-07-18-multi-tenant-support.md`. Implementer moves everything staged for the item into the repository, on the item's own branch, when it picks the item up. The `<path>` you hand off is then that staged path, project-root-relative (`.baton/s/<instance>/staging/<item>/...`).
+
+`$BATON_MARKER_DIR` is a shell variable resolving to a per-session subdirectory (`.baton/s/<instance>/`), never the flat `.baton/`. Write through the shell so it expands (`mkdir -p` the directory first), or run `echo "$BATON_MARKER_DIR"` first and use that exact absolute path with a file-writing tool. Never hand-type a `.baton/...` path.
+
+If the artifact you're updating already lives in the repository rather than under `staging/` - implementer has picked the item up, e.g. you're answering a question it bounced - update it in place there instead.
+
+A manually-driven chain (no `conductor-run`) has none of this: write to the repository as normal.
+
+---
+
 # Ad hoc messaging
 
 ```
@@ -407,7 +419,7 @@ Fire-and-forget: it types the text into another role's pane and returns immediat
 
 When complete:
 
-- persist the implementation design as a single document according to the project's location convention - the one and only copy: do not duplicate it into a fixed baton path, and do not split it into the separate files a project's convention might otherwise call for (see Workflow step 5)
+- persist the implementation design as a single document according to the project's location convention - staged instead in a conductor-driven run (see "Staging (conductor-driven runs)" above) - the one and only copy: do not duplicate it into a fixed baton path, and do not split it into the separate files a project's convention might otherwise call for (see Workflow step 5)
 - if running inside a baton workspace (`BATON_ROOT` is set): normally, run `baton-handoff --status done "<path>"`, `<path>` being the implementation design you just persisted - this hands the design off to the implementer pane automatically. If you are answering a question implementer bounced to you, instead follow "Answering a question bounced from implementer" above so the handoff routes back to implementer rather than forward as normal. Run this last, only once the design is fully written and persisted. Needing more turns to finish writing is not, by itself, a reason to stop and ask before continuing; only a genuine blocking ambiguity is (see "Bouncing an ambiguous Planning Brief").
 - report the document location
 - summarize the chosen architecture

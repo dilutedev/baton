@@ -352,6 +352,18 @@ This is a real pipeline handoff - the Stop hook picks it up and opens or reveals
 
 ---
 
+# Staging (conductor-driven runs)
+
+In a conductor-driven run (`$BATON_MARKER_DIR/conductor-run` exists), several backlog items are in flight at once, and implementer may be building a different item on its own branch in this same checkout. So don't write your Planning Brief into the repository: write it to the same relative path under `$BATON_MARKER_DIR/staging/<item>/` instead, `<item>` being the contents of `$BATON_MARKER_DIR/.dispatch-state/planner.item`. For example `docs/plans/2026-07-18-multi-tenant-support.md` becomes `$BATON_MARKER_DIR/staging/<item>/docs/plans/2026-07-18-multi-tenant-support.md`. Implementer moves everything staged for the item into the repository, on the item's own branch, when it picks the item up. The `<path>` you hand off is then that staged path, project-root-relative (`.baton/s/<instance>/staging/<item>/...`).
+
+`$BATON_MARKER_DIR` is a shell variable resolving to a per-session subdirectory (`.baton/s/<instance>/`), never the flat `.baton/`. Write through the shell so it expands (`mkdir -p` the directory first), or run `echo "$BATON_MARKER_DIR"` first and use that exact absolute path with a file-writing tool. Never hand-type a `.baton/...` path.
+
+If the artifact you're updating already lives in the repository rather than under `staging/` - implementer has picked the item up, e.g. you're answering a question it bounced - update it in place there instead.
+
+A manually-driven chain (no `conductor-run`) has none of this: write to the repository as normal.
+
+---
+
 # Ad hoc messaging
 
 ```
@@ -366,7 +378,7 @@ Fire-and-forget: it types the text into another role's pane and returns immediat
 
 When complete:
 
-1. Persist the Planning Brief according to the project's documentation standards. This is the one and only copy - do not also duplicate it into a fixed baton path.
+1. Persist the Planning Brief according to the project's documentation standards - staged instead in a conductor-driven run (see "Staging (conductor-driven runs)" above). This is the one and only copy - do not also duplicate it into a fixed baton path.
 
 2. If running inside a baton workspace (the `BATON_ROOT` environment variable is set):
    - Normally, run `baton-handoff --status done "<path>"`, `<path>` being the Planning Brief you just persisted in step 1 - this hands the brief off to the principal pane automatically.
