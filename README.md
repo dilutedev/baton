@@ -325,7 +325,7 @@ your local copy and is git-ignored: `install.sh` creates it from
 | Key | Values |
 |---|---|
 | role | `conductor`, `researcher`, `planner`, `principal`, `implementer`, `reviewer` |
-| `tool` | `claude`, `codex`, or `omp` - which CLI agent runs the role |
+| `tool` | `claude`, `claude2`, `codex`, or `omp` - which CLI agent runs the role. `claude2` is Claude Code on a second account: same CLI and models, but with `CLAUDE_CONFIG_DIR=~/.claude-secondary`, so it uses that account's login, settings, and hooks |
 | `model` | an alias or model name meaningful to that tool (`sonnet`/`opus` for `claude`, `gpt-5.x`-style names for `codex`) |
 | `effort` | `low`, `medium`, `high`, `xhigh`, `max` |
 | `layout` | `tiled`, `main-vertical`, `main-horizontal` (top level, no role prefix) |
@@ -511,5 +511,5 @@ see the environment `baton` runs in). To change one mid-run, `baton stop` and
 ## Tests
 
 The scripts in `tests/` are plain bash with no framework; run one with
-`bash tests/<name>.sh` (`courier`, `dispatch`, `env`, `handoff`, `nudge`,
-`remove`, `status`, `update`).
+`bash tests/<name>.sh` (`claude2`, `courier`, `dispatch`, `env`, `handoff`,
+`nudge`, `remove`, `status`, `update`).
