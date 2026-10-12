@@ -41,6 +41,31 @@ fi
 grep -q 'local changes' "$test_root/out"
 git -C "$test_root/install" checkout -q -- notes
 
+# Local and upstream both have new commits: don't merge, say it diverged.
+git -C "$test_root/install" commit -q --allow-empty -m "Local only"
+printf 'three\n' >>"$test_root/work/notes"
+git -C "$test_root/work" commit -q -am "Third change"
+git -C "$test_root/work" push -q origin main 2>/dev/null
+if "$install_baton" update >"$test_root/out" 2>&1; then
+  echo "update: fast-forwarded over a diverged branch" >&2
+  exit 1
+fi
+grep -q 'commits upstream' "$test_root/out"
+git -C "$test_root/install" reset -q --hard HEAD~1
+
+# Remote unreachable (offline): say so, not that the branch diverged.
+mv "$test_root/origin.git" "$test_root/origin-offline.git"
+if "$install_baton" update >"$test_root/out" 2>&1; then
+  echo "update: succeeded with the remote unreachable" >&2
+  exit 1
+fi
+grep -q "couldn't reach" "$test_root/out"
+if grep -q 'commits upstream' "$test_root/out"; then
+  echo "update: blamed divergence for an unreachable remote" >&2
+  exit 1
+fi
+mv "$test_root/origin-offline.git" "$test_root/origin.git"
+
 # A branch with no upstream: nothing to pull from, say how to fix it.
 git -C "$test_root/install" checkout -q -b local-only
 if "$install_baton" update >"$test_root/out" 2>&1; then
