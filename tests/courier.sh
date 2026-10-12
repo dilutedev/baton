@@ -10,7 +10,10 @@ mkdir -p "$state_dir" "$test_root/bin" "$test_root/status"
 printf 'conductor\tconductor-agent\nresearcher\tresearcher-agent\nimplementer\timplementer-agent\n' >"$marker_dir/agents.map"
 
 # herdr stub: `agent get` reports $test_root/status/<agent>, `agent prompt`
-# logs (or fails while $test_root/fail exists).
+# logs, then flips the agent to working like a pane taking the prompt would
+# (fails while $test_root/fail exists, is ignored while $test_root/ignore
+# exists, and leaves the agent working after a /clear while $test_root/stuck
+# exists).
 cat >"$test_root/bin/herdr" <<EOF
 #!/bin/sh
 case "\$1 \$2" in
@@ -18,6 +21,12 @@ case "\$1 \$2" in
 "agent prompt")
   [ ! -e "$test_root/fail" ] || exit 1
   printf '%s %s\n' "\$3" "\$4" >>"$test_root/prompts"
+  [ ! -e "$test_root/ignore" ] || exit 0
+  if [ "\$4" = /clear ]; then
+    [ ! -e "$test_root/stuck" ] || echo working >"$test_root/status/\$3"
+  else
+    echo working >"$test_root/status/\$3"
+  fi
   ;;
 esac
 EOF
@@ -25,7 +34,7 @@ chmod +x "$test_root/bin/herdr"
 : >"$test_root/prompts"
 
 tick() {
-  PATH="$test_root/bin:$PATH" bash "$repository_dir/bin/baton-courier" "$marker_dir" --once
+  BATON_COURIER_WAIT_POLLS=2 PATH="$test_root/bin:$PATH" bash "$repository_dir/bin/baton-courier" "$marker_dir" --once
 }
 status() { echo "$2" >"$test_root/status/$1"; }
 echo idle >"$test_root/status/conductor-agent"
@@ -60,6 +69,7 @@ researcher-agent body two" ]
 
 # A bounce back on the same item isn't cleared.
 rm "$state_dir/researcher.i2.armed"
+status researcher-agent done
 printf 'i2\tquestion\n' >"$state_dir/researcher.queue"
 tick
 [ "$(tail -n 1 "$test_root/prompts")" = "researcher-agent question" ]
@@ -67,6 +77,7 @@ tick
 
 # A failed prompt leaves the entry queued and the role unarmed, then retries.
 rm "$state_dir/researcher.i2.armed"
+status researcher-agent done
 printf 'i3\tbody three\n' >"$state_dir/researcher.queue"
 touch "$test_root/fail"
 tick
@@ -78,8 +89,41 @@ tick
 [ "$(tail -n 1 "$test_root/prompts")" = "researcher-agent body three" ]
 [ "$(cat "$state_dir/researcher.item")" = i3 ]
 
-# Blocked on a permission prompt: not delivered.
+# A prompt the pane never starts a turn on isn't delivered: still queued and
+# unarmed, then retried once the pane takes it.
 rm "$state_dir/researcher.i3.armed"
+status researcher-agent done
+printf 'i5\tbody five\n' >"$state_dir/researcher.queue"
+touch "$test_root/ignore"
+tick
+[ "$(cat "$state_dir/researcher.queue")" = "i5	body five" ]
+[ "$(cat "$state_dir/researcher.item")" = i3 ]
+[ ! -e "$state_dir/researcher.i5.armed" ]
+rm "$test_root/ignore"
+status researcher-agent done
+tick
+[ "$(tail -n 1 "$test_root/prompts")" = "researcher-agent body five" ]
+[ "$(cat "$state_dir/researcher.item")" = i5 ]
+[ ! -s "$state_dir/researcher.queue" ]
+
+# A clear that never finishes holds the payload back: it isn't typed at all.
+rm "$state_dir/researcher.i5.armed"
+status researcher-agent done
+printf 'i6\tbody six\n' >"$state_dir/researcher.queue"
+touch "$test_root/stuck"
+tick
+[ "$(tail -n 1 "$test_root/prompts")" = "researcher-agent /clear" ]
+[ "$(cat "$state_dir/researcher.queue")" = "i6	body six" ]
+[ "$(cat "$state_dir/researcher.item")" = i5 ]
+rm "$test_root/stuck"
+status researcher-agent done
+tick
+[ "$(tail -n 2 "$test_root/prompts")" = "researcher-agent /clear
+researcher-agent body six" ]
+[ "$(cat "$state_dir/researcher.item")" = i6 ]
+rm "$state_dir/researcher.i6.armed"
+
+# Blocked on a permission prompt: not delivered.
 status researcher-agent blocked
 printf 'i4\tbody four\n' >"$state_dir/researcher.queue"
 tick
@@ -99,10 +143,9 @@ fi
 # A manually-driven chain's entry (no item) is delivered without touching item state.
 status researcher-agent idle
 printf '\tmanual payload\n' >"$state_dir/researcher.queue"
-rm -f "$state_dir/researcher.i4.armed"
 tick
 [ "$(tail -n 1 "$test_root/prompts")" = "researcher-agent manual payload" ]
-[ "$(cat "$state_dir/researcher.item")" = i3 ]
+[ "$(cat "$state_dir/researcher.item")" = i6 ]
 
 # Implementer builds one item at a time: taking one locks the build to it.
 printf 'b1\tdesign b1\n' >"$state_dir/implementer.queue"
@@ -113,16 +156,19 @@ tick
 # Handed b1 to reviewer, but b1 hasn't passed: b2's design waits, while
 # b1's CHANGES REQUIRED gets through even though it's queued behind it.
 rm "$state_dir/implementer.b1.armed"
+status implementer-agent done
 printf 'b2\tdesign b2\nb1\tchanges for b1\n' >"$state_dir/implementer.queue"
 tick
 [ "$(tail -n 1 "$test_root/prompts")" = "implementer-agent changes for b1" ]
 [ "$(cat "$state_dir/implementer.queue")" = "b2	design b2" ]
 rm "$state_dir/implementer.b1.armed"
+status implementer-agent done
 tick
 [ "$(tail -n 1 "$test_root/prompts")" = "implementer-agent changes for b1" ]
 
 # b1 passed (baton-handoff drops the lock): b2 goes in, cleared first.
 rm "$state_dir/build.item"
+status implementer-agent done
 tick
 [ "$(tail -n 2 "$test_root/prompts")" = "implementer-agent /clear
 implementer-agent design b2" ]

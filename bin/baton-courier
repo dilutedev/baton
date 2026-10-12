@@ -17,8 +17,11 @@
 # - its turn has actually ended - herdr reports it idle or done (not
 #   working, or blocked on a permission prompt).
 # Switching a pane to a different item clears it first, so the previous
-# item's turns don't ride along. A failed prompt leaves the entry queued
-# for the next tick.
+# item's turns don't ride along. The clear must finish (the pane is idle
+# again) before the payload is typed, and the payload must start a turn
+# (the pane reports working) before the entry counts as delivered - a
+# prompt that fails, or isn't taken, leaves the entry queued and the role
+# unarmed for the next tick. The waits happen with the lock released.
 #
 # Implementer builds one item at a time - everything shares one checkout,
 # and an item's fixes after CHANGES REQUIRED must land on its own branch
@@ -56,6 +59,8 @@ role_busy() {
   [ -n "$item" ] && [ -e "$state_dir/$role.$item.armed" ]
 }
 
+wait_polls="${BATON_COURIER_WAIT_POLLS:-25}"
+
 agent_status() {
   herdr agent get "$1" </dev/null 2>/dev/null | python3 -c '
 import json, sys
@@ -79,27 +84,54 @@ next_line() {
   awk -F'\t' -v b="$build" '$1==b{print NR; exit}' "$state_dir/$1.queue"
 }
 
-# deliver_next <role> <agent> <line> -> types that queue entry into the
-# pane, then records it as that role's current, armed item (an entry with
-# no item - a manually-driven chain - only gets typed in).
-deliver_next() {
-  local role="$1" agent="$2" line="$3" file="$state_dir/$1.queue"
-  local entry item text previous=""
-  entry="$(sed -n "${line}p" "$file")"
-  item="${entry%%	*}"
-  text="${entry#*	}"
-  [ -f "$state_dir/$role.item" ] && previous="$(cat "$state_dir/$role.item")"
+wait_for_agent() {
+  local agent="$1" accepted="$2" polls=0
+  while [ "$polls" -lt "$wait_polls" ]; do
+    case " $accepted " in
+    *" $(agent_status "$agent") "*) return 0 ;;
+    esac
+    sleep 0.2
+    polls=$((polls + 1))
+  done
+  return 1
+}
 
+# send_entry <role> <agent> <item> <text> <previous> -> types the payload
+# into the pane (clearing it first when switching items) and waits for the
+# pane to start working on it. Runs without the lock.
+send_entry() {
+  local role="$1" agent="$2" item="$3" text="$4" previous="$5"
   if [ -n "$item" ] && [ "$role" != "conductor" ] && [ -n "$previous" ] && [ "$previous" != "$item" ]; then
-    herdr agent prompt "$agent" "/clear" </dev/null >/dev/null 2>&1 || return 0
+    herdr agent prompt "$agent" "/clear" </dev/null >/dev/null 2>&1 || return 1
+    sleep 1
+    wait_for_agent "$agent" "idle done" || return 1
   fi
   # Deliberately doesn't `herdr agent focus` the target - a handoff can land
   # while the human is looking at an unrelated pane, and stealing focus
   # every time any role completes a turn was yanking them away from what
   # they were actually doing.
-  herdr agent prompt "$agent" "$text" </dev/null >/dev/null 2>&1 || return 0
+  herdr agent prompt "$agent" "$text" </dev/null >/dev/null 2>&1 || return 1
+  wait_for_agent "$agent" "working"
+}
 
-  sed "${line}d" "$file" >"$file.tmp"
+# deliver_next <role> <agent> <line> -> sends that queue entry, then records
+# it as that role's current, armed item (an entry with no item - a
+# manually-driven chain - only gets typed in). Called with the lock held;
+# returns with it held.
+deliver_next() {
+  local role="$1" agent="$2" line="$3" file="$state_dir/$1.queue"
+  local entry item text previous="" sent=""
+  entry="$(sed -n "${line}p" "$file")"
+  item="${entry%%	*}"
+  text="${entry#*	}"
+  [ -f "$state_dir/$role.item" ] && previous="$(cat "$state_dir/$role.item")"
+
+  drop_lock
+  send_entry "$role" "$agent" "$item" "$text" "$previous" && sent=1
+  take_lock
+  [ -n "$sent" ] || return 0
+
+  entry="$entry" awk '!removed && $0 == ENVIRON["entry"] {removed=1; next} {print}' "$file" >"$file.tmp"
   mv "$file.tmp" "$file"
   if [ -n "$item" ]; then
     echo "$item" >"$state_dir/$role.item"
