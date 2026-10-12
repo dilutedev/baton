@@ -356,6 +356,14 @@ Name the branch with a conventional-commit-style prefix matching the nature of t
 
 If you're already on a non-trunk branch - resuming after CHANGES REQUIRED, or one the user set up for you - reuse it; do not create a second branch for the same feature.
 
+**Conductor-driven runs** (`$BATON_MARKER_DIR/conductor-run` exists) work through several backlog items one after another in this same checkout, so the branch you're on is usually the *previous* item's. Don't reuse it, and don't branch from it unless this item depends on it - otherwise every item's branch (and PR) would carry the earlier items' changes too. Instead:
+
+1. Find this item's ref: the contents of `$BATON_MARKER_DIR/.dispatch-state/implementer.item`. End the branch name with it, after the slug: `feat/<slug>-<item>` (same prefix rules as above).
+2. If a branch ending in `-<item>` already exists, this is the same item coming back to you (CHANGES REQUIRED, an answered question): check it out and carry on there.
+3. Otherwise this is a new item. Look at what it's blocked by (`kata show <item> --agent`). For each blocker whose work isn't in trunk yet (its branch, ending in `-<blocker ref>`, isn't merged into trunk), you need that work: branch from that blocker's branch - if there are several, the one with the most recent commit, and say in your report which branch you based it on. If nothing it depends on is unmerged, check out trunk and branch from there.
+
+Before switching branches, make sure the previous item's work is committed (it is, if reviewer passed it) - never carry uncommitted changes from one item's branch to another's.
+
 ## Bringing in staged artifacts
 
 In a conductor-driven run (`$BATON_MARKER_DIR/conductor-run` exists), researcher, planner and principal don't write this item's Technical Brief, Planning Brief or Implementation Design into the repository - several items are in flight at once, and the repository is on whichever branch you're building. They stage them under `$BATON_MARKER_DIR/staging/<item>/` instead, at the same relative paths they'd otherwise have, `<item>` being the contents of `$BATON_MARKER_DIR/.dispatch-state/implementer.item`. Once you're on this item's branch, move them in through the shell (so the variable expands): `cp -R "$BATON_MARKER_DIR/staging/<item>/." "$BATON_ROOT/"`, then `rm -r "$BATON_MARKER_DIR/staging/<item>"`. Each file now lives at the path you were handed minus its `.baton/s/<instance>/staging/<item>/` prefix - read and reference it there from now on, and commit it with your change (see below). If nothing is staged for the item (it skipped those stages, or you already moved them in an earlier pass), skip this.
