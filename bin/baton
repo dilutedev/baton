@@ -1381,7 +1381,13 @@ cmd_update() {
   }
 
   before="$("${git_dir[@]}" rev-parse HEAD)"
-  "${git_dir[@]}" pull --ff-only --quiet || {
+  # Fetch and fast-forward separately, so being offline isn't reported as
+  # a diverged branch.
+  "${git_dir[@]}" fetch --quiet || {
+    echo "baton: couldn't reach $ROOT_DIR's remote (see git's error above) - check your connection and try again" >&2
+    exit 1
+  }
+  "${git_dir[@]}" merge --ff-only --quiet '@{upstream}' 2>/dev/null || {
     echo "baton: couldn't fast-forward '$branch' in $ROOT_DIR (it has commits upstream doesn't) - sort it out with git there" >&2
     exit 1
   }
