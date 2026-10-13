@@ -230,6 +230,15 @@ CHANGES REQUIRED is not your concern - reviewer bounces those to implementer dir
 
 ---
 
+## 5b. Feature workflow (`feature-v1`)
+
+If `$BATON_MARKER_DIR/workflow_version` contains `feature-v1`, the session produces one draft pull request for the whole goal, and this section changes steps 1 and 5. At the start of every invocation, run `baton-item status`: any item with a recorded PASS whose kata issue is still open (for example after a stop or resume) is closed as in step 5, and a finalization already underway (`finalization: review`) continues below.
+
+- **Closing an item**: before `kata close`, run `baton-item verify <ref>`. Close only if it exits 0; if it does not, do not close the item - report what it printed and stop.
+- **The last item**: when no open items remain, do not close the goal issue. Run `baton-item final-start` (it refuses unless every item has a recorded PASS), write the goal ref as both lines of `$BATON_MARKER_DIR/conductor-run`, and run `baton-handoff --status done --route implementer "finalization: all backlog items passed review; verify the whole feature, publish, and hand off for final review"`. Then end the turn with a report - the combined feature is now being finalized.
+- **Final review PASS** (a handoff whose `item <ref>` is the goal ref): run `baton-item ready --wait`. Exit 0 means the same PR is now ready for review; close the goal issue (`kata close <goal-ref> --done --message "ready to merge: <pull request url>" --agent`) and stop with "ready to merge" - never say "shipped" or merge it yourself. Exit 2 means required checks are still running: stop and report that finalization is waiting, so the user can re-run `baton-item ready --wait` or message you. Exit 3 means required checks failed: run `baton-item final-start` again and `baton-handoff --status done --route implementer "finalization: required checks are failing on the pull request: <names>"`. Exit 4 means the pull request was closed or merged outside the session: stop and report it.
+- **A publication blocker** bounced to you (a note from implementer naming a failed push, a diverged branch, or a changed pull request) is not a context gap: stop and report the note verbatim for the user to resolve. Leave the item claimed.
+
 ## 6. Handle a context bounce
 
 Read the note the payload path points to. Some role - researcher, planner, principal, implementer, or reviewer - is telling you the backlog item's description didn't give it enough to work with. This is a gap in the dispatch itself, distinct from a product-scope ambiguity (bounces to planner) or a missing repository fact (bounces to researcher) - neither of those ever reaches you.

@@ -141,7 +141,7 @@ update, `baton stop` it and `baton resume` it.
 ## Usage
 
 ```
-baton start [--base BRANCH] [--think] [--yes] [DIR]
+baton start [--base BRANCH] [--workflow feature-v1|worktree-v1] [--think] [--yes] [DIR]
                                      Start a new instance for DIR (default: cwd) in its own git worktree
 baton status [DIR]                   List every instance for DIR, running or stopped
 baton attach [REF] [DIR]             Switch into a running instance (REF: slug or uuid)
@@ -183,13 +183,57 @@ The session branch starts from `--base`:
 
 The base, its commit, and its remote are recorded in the marker dir
 (`base_branch`, `base_ref`, `base_commit`, `remote`), along with
-`workflow_version` (`worktree-v1`). Sessions started before worktrees existed
-have no `workflow_version` and keep their old behavior: panes run in `DIR` and
-roles may still create a worktree themselves.
+`workflow_version`. Sessions started before worktrees existed have no
+`workflow_version` and keep their old behavior: panes run in `DIR` and roles may
+still create a worktree themselves. A recorded version is never changed by
+`update` or `resume`.
 
-Item branches and PR targets are unchanged: items still branch from trunk or
-from an unmerged blocker, and PRs still target trunk. The worktree changes
-where the work happens, not how it is integrated.
+| `workflow_version` | When | Behavior |
+|---|---|---|
+| (absent) | sessions from before worktrees | roles run in `DIR`; item branches and per-item PRs |
+| `worktree-v1` | `--workflow worktree-v1`, or a base with no remote | own worktree; item branches and per-item PRs, as before |
+| `feature-v1` | default when the base is on a GitHub remote | own worktree; one branch and one PR (below) |
+
+### One PR per feature
+
+A `feature-v1` session turns the whole goal into **one draft pull request**
+into the base branch. The conductor's backlog items are review steps, not PRs:
+implementer commits each item directly on the session branch, reviewer checks
+that exact commit, and only a PASS lets the next item start. Baton never merges
+the PR. If a feature is too big for one PR, split the goal into smaller
+sessions.
+
+`baton start` needs `gh` installed and authenticated and a GitHub remote, and
+stops before creating anything otherwise (`--workflow worktree-v1` skips this).
+Per item, roles run `baton-item`:
+
+- `start` records the commit the item starts from and refuses unless the
+  checkout is clean on the session branch and every earlier item passed.
+- `complete` records the item's completed commit and its verification summary.
+- `publish` pushes the branch (never force) and creates the draft PR once, or
+  finds and reuses it, including after an interrupted create. A PR that was
+  closed or merged outside the session stops the session instead of opening a
+  replacement.
+- `review` records the verdict, the reviewed commit, and the report path, in
+  the marker dir and as a Kata comment. Reports stay in the marker dir, so a
+  review never changes the PR head.
+
+`baton-handoff` refuses a reviewer PASS unless the reviewed commit is the item's
+completed commit, is the current session tip, and the checkout is clean. The
+conductor closes an item only after `baton-item verify` confirms the record.
+
+When the backlog is exhausted the conductor starts finalization: implementer
+runs whole-feature verification and publishes, reviewer reviews the combined
+diff against the base and the PR's checks, and the conductor runs
+`baton-item ready --wait`, which marks the same PR ready only if the final PASS
+is for the PR head and required checks passed. Failing checks go back to
+implementer; pending checks leave finalization waiting (rerun `baton-item
+ready --wait`). The goal is reported as "ready to merge", not "shipped".
+
+`resume` leaves the checkout alone but refuses if it is on a different branch
+than the session branch, then prints `baton-item status` (items, publication,
+PR, finalization). `remove` also refuses while commits on the session branch
+aren't on the remote; the PR may stay open.
 
 A worktree is a fresh checkout, so it doesn't contain ignored files. `.env`
 files, installed dependencies, databases, and port numbers are not shared or
@@ -550,4 +594,4 @@ see the environment `baton` runs in). To change one mid-run, `baton stop` and
 
 The scripts in `tests/` are plain bash with no framework; run one with
 `bash tests/<name>.sh` (`claude2`, `courier`, `dispatch`, `env`, `handoff`,
-`nudge`, `remove`, `status`, `update`, `worktree`).
+`nudge`, `remove`, `status`, `update`, `worktree`, `feature`).

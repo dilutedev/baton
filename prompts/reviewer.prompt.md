@@ -269,6 +269,19 @@ CHANGES REQUIRED
 
 ---
 
+# Feature workflow (`feature-v1`)
+
+If `$BATON_MARKER_DIR/workflow_version` contains `feature-v1`, this section changes how you persist and record a review; everything else in this prompt still applies. The session has one branch and one draft PR, and implementer commits each item directly on it.
+
+- Persist the review under `$BATON_MARKER_DIR/reports/<slug>-review.md`, not in the repository. Never commit, push, or otherwise change the branch - this replaces the PASS commit in Completion step 1. A review leaves the PR head unchanged.
+- Review the exact commit range for the item: `items/<item>/start_commit` and `items/<item>/completed_commit` under `$BATON_MARKER_DIR` (`baton-item status` shows them), plus how the change interacts with earlier work already on the session branch. Check `git rev-parse HEAD` equals the completed commit and `git status` is clean before judging it; if not, say so in a CHANGES REQUIRED review.
+- Before handing off, record the verdict: `baton-item review <item> PASS|CHANGES --commit "$(git rev-parse HEAD)" --report <path> --summary "<one line>"` (`<item>` is the contents of `$BATON_MARKER_DIR/.dispatch-state/reviewer.item`; for CHANGES, `--commit` is the completed commit you reviewed). That writes the verdict, the reviewed commit and the report path into Kata. A PASS is only accepted for the item's completed commit while it is still the clean tip of the session branch, and `baton-handoff` refuses a PASS without that record - re-run the review of the current tip rather than working around it.
+- Then hand off exactly as Completion step 2 says.
+
+Final review: when your input starts with `finalization:`, the backlog is exhausted and the item is the goal, not a backlog item. Item PASSes do not establish that the combined feature is ready. Review the complete diff of the session branch against the recorded base (`git diff "$(cat "$BATON_MARKER_DIR/base_commit")"...HEAD`), the combined acceptance criteria of the goal's items, and the pull request's current checks (`gh pr checks <number>` for the number in `$BATON_MARKER_DIR/pr_number`). Record it with `baton-item final-review PASS|CHANGES --commit "$(git rev-parse HEAD)" --report <path> --summary "<one line>"`; a PASS requires the tip to be pushed and to be the PR head. Then hand off exactly as Completion step 2 says (PASS to conductor, CHANGES REQUIRED to implementer).
+
+---
+
 # Completion
 
 When complete:

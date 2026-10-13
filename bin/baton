@@ -59,7 +59,7 @@ BATON_USE_COLOR=0
 usage() {
   cat <<'EOF'
 Usage:
-  baton start [--base BRANCH] [--think] [--yes] [DIR]
+  baton start [--base BRANCH] [--workflow feature-v1|worktree-v1] [--think] [--yes] [DIR]
                                        Start a new instance for DIR (default: cwd) in its own git worktree,
                                        branched from BASE (default: the remote's default branch)
   baton status [DIR]                   List every instance for DIR, running or stopped
@@ -256,6 +256,32 @@ resolve_base() {
     return 1
   fi
   BASE_REF="$requested"
+}
+
+github_repo_for_remote() {
+  local repo="$1" remote_name="$2" remote_url
+  remote_url="$(git -C "$repo" config --get "remote.$remote_name.url" 2>/dev/null)" || return 1
+  printf '%s\n' "$remote_url" |
+    sed -nE 's#^(https?://([^@/]+@)?|ssh://([^@/]+@)?|[^@/]+@)github\.com[:/]+([^/]+/[^/]+)$#\4#p' |
+    sed -E 's#\.git$##; s#/$##' |
+    grep -E '^[^/]+/[^/]+$'
+}
+
+require_feature_prerequisites() {
+  local repo="$1" remote_name="$2" github_repo
+  command -v gh >/dev/null 2>&1 || {
+    echo "baton: the feature workflow publishes one pull request and needs the GitHub CLI (gh) - install it, or start with --workflow worktree-v1" >&2
+    return 1
+  }
+  gh auth status >/dev/null 2>&1 || {
+    echo "baton: the GitHub CLI is not authenticated - run 'gh auth login', or start with --workflow worktree-v1" >&2
+    return 1
+  }
+  github_repo="$(github_repo_for_remote "$repo" "$remote_name")" || {
+    echo "baton: remote '$remote_name' is not a GitHub repository, which the feature workflow requires - start with --workflow worktree-v1 to skip the pull request" >&2
+    return 1
+  }
+  echo "$github_repo"
 }
 
 # config_get <file> <key> -> last matching "key = value" line's value, if any.
@@ -1111,7 +1137,7 @@ attach_or_launch() {
 }
 
 cmd_start() {
-  local think=0 dir="." yes=0 requested_base=""
+  local think=0 dir="." yes=0 requested_base="" workflow="" pr_repo=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
     --think) think=1 ;;
@@ -1119,6 +1145,14 @@ cmd_start() {
     --base)
       [ "$#" -ge 2 ] || { echo "baton: --base needs a branch" >&2; exit 1; }
       requested_base="$2"
+      shift
+      ;;
+    --workflow)
+      [ "$#" -ge 2 ] || { echo "baton: --workflow needs feature-v1 or worktree-v1" >&2; exit 1; }
+      case "$2" in
+      feature-v1 | worktree-v1) workflow="$2" ;;
+      *) echo "baton: unknown workflow '$2' - use feature-v1 or worktree-v1" >&2; exit 1 ;;
+      esac
       shift
       ;;
     -*) echo "baton: unknown start option '$1'" >&2; exit 1 ;;
@@ -1132,6 +1166,14 @@ cmd_start() {
     exit 1
   }
   resolve_base "$dir" "$requested_base" || exit 1
+  [ -n "$workflow" ] || { [ -n "$BASE_REMOTE" ] && workflow=feature-v1 || workflow=worktree-v1; }
+  if [ "$workflow" = feature-v1 ]; then
+    [ -n "$BASE_REMOTE" ] || {
+      echo "baton: the feature workflow publishes to a remote and '$BASE_REF' has none - start with --workflow worktree-v1" >&2
+      exit 1
+    }
+    pr_repo="$(require_feature_prerequisites "$dir" "$BASE_REMOTE")" || exit 1
+  fi
   git -C "$dir" cat-file -e "$BASE_COMMIT:.kata.toml" 2>/dev/null || {
     echo "baton: warning - .kata.toml isn't committed at $BASE_REF, so the session worktree won't be bound to your kata project; commit it first or the conductor will run 'kata init' inside the worktree" >&2
   }
@@ -1172,7 +1214,8 @@ cmd_start() {
     exit 1
   }
   worktree_path="$(cd "$worktree_path" && pwd -P)"
-  echo worktree-v1 >"$marker_dir/workflow_version"
+  echo "$workflow" >"$marker_dir/workflow_version"
+  [ -z "$pr_repo" ] || echo "$pr_repo" >"$marker_dir/pr_repo"
   echo "$session_branch" >"$marker_dir/session_branch"
   echo "$BASE_TARGET" >"$marker_dir/base_branch"
   echo "$BASE_REF" >"$marker_dir/base_ref"
@@ -1244,12 +1287,21 @@ cmd_resume() {
   fi
 
   local work_dir=""
-  if [ "$(cat "$marker_dir/workflow_version" 2>/dev/null || true)" = "worktree-v1" ]; then
+  if [ -n "$(cat "$marker_dir/workflow_version" 2>/dev/null || true)" ]; then
     work_dir="$(cat "$marker_dir/worktree" 2>/dev/null || true)"
     [ -n "$work_dir" ] && [ -d "$work_dir" ] || {
       echo "baton: the session checkout '$work_dir' is missing - 'baton remove $instance $DIR' discards this session" >&2
       exit 1
     }
+    if [ "$(cat "$marker_dir/workflow_version")" = "feature-v1" ]; then
+      local recorded_branch current_branch
+      recorded_branch="$(cat "$marker_dir/session_branch" 2>/dev/null || true)"
+      current_branch="$(git -C "$work_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+      [ "$current_branch" = "$recorded_branch" ] || {
+        echo "baton: the session checkout is on '$current_branch', not the session branch '$recorded_branch' - switch it back (or commit or stash first); resume does not move branches" >&2
+        exit 1
+      }
+    fi
   fi
 
   if [ "$yes" != 1 ]; then
@@ -1267,6 +1319,9 @@ cmd_resume() {
   rm -f "$marker_dir/.dispatch-state/"*.armed
   start_courier "$marker_dir"
   echo "baton: resumed '$name' ($instance) for $DIR"
+  if [ "$(cat "$marker_dir/workflow_version" 2>/dev/null || true)" = "feature-v1" ]; then
+    BATON_MARKER_DIR="$marker_dir" "$BIN_DIR/baton-item" status || true
+  fi
 
   nudge_conductor "$marker_dir"
 
@@ -1327,6 +1382,20 @@ check_session_worktree_removable() {
   worktree_path="$(registered_session_worktree "$repo" "$marker_dir")" || status=$?
   [ "$status" = 2 ] && return 0
   [ "$status" = 0 ] || return 1
+  if [ "$(cat "$marker_dir/workflow_version" 2>/dev/null || true)" = "feature-v1" ]; then
+    local session_branch local_tip remote_name remote_tip base_commit
+    session_branch="$(cat "$marker_dir/session_branch")"
+    remote_name="$(cat "$marker_dir/remote")"
+    base_commit="$(cat "$marker_dir/base_commit")"
+    local_tip="$(git -C "$worktree_path" rev-parse "refs/heads/$session_branch")"
+    if [ "$local_tip" != "$base_commit" ]; then
+      remote_tip="$(git -C "$worktree_path" ls-remote "$remote_name" "refs/heads/$session_branch" 2>/dev/null | awk '{print $1; exit}')"
+      if [ "$remote_tip" != "$local_tip" ] && ! { [ -n "$remote_tip" ] && git -C "$worktree_path" merge-base --is-ancestor "$local_tip" "$remote_tip" 2>/dev/null; }; then
+        echo "baton: commits on $session_branch are not published to $remote_name (or $remote_name is unreachable) - run 'baton-item publish' from the session, or push the branch, before removing" >&2
+        return 1
+      fi
+    fi
+  fi
   if [ -n "$(git -C "$worktree_path" status --porcelain 2>/dev/null)" ]; then
     echo "baton: $worktree_path has uncommitted changes - commit or discard them before removing this session" >&2
     return 1
@@ -1372,7 +1441,7 @@ cmd_remove() {
     exit 1
   fi
 
-  if [ "$(cat "$marker_dir/workflow_version" 2>/dev/null || true)" = "worktree-v1" ]; then
+  if [ -n "$(cat "$marker_dir/workflow_version" 2>/dev/null || true)" ]; then
     check_session_worktree_removable "$DIR" "$marker_dir" || exit 1
   fi
 
@@ -1393,7 +1462,7 @@ cmd_remove() {
     fi
   fi
 
-  if [ "$(cat "$marker_dir/workflow_version" 2>/dev/null || true)" = "worktree-v1" ]; then
+  if [ -n "$(cat "$marker_dir/workflow_version" 2>/dev/null || true)" ]; then
     remove_session_worktree "$DIR" "$marker_dir" || exit 1
   fi
 
@@ -1503,6 +1572,12 @@ cmd_status() {
         printf '  workflow %s  branch %s  base %s@%s\n  worktree %s\n' "$(cat "$d/workflow_version")" \
           "$(cat "$d/session_branch" 2>/dev/null)" "$(cat "$d/base_ref" 2>/dev/null)" \
           "$(cut -c1-12 "$d/base_commit" 2>/dev/null)" "$(cat "$d/worktree" 2>/dev/null)"
+        if [ "$(cat "$d/workflow_version")" = "feature-v1" ]; then
+          printf '  pull request %s' "$(cat "$d/pr_url" 2>/dev/null || echo none)"
+          [ ! -f "$d/final/phase" ] || printf '  finalization %s' "$(cat "$d/final/phase")"
+          [ ! -f "$d/.dispatch-state/build.item" ] || printf '  building %s' "$(cat "$d/.dispatch-state/build.item")"
+          echo
+        fi
       fi
 
       agents_file="$d/agents.map"

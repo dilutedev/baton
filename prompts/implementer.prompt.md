@@ -348,7 +348,25 @@ This is a real pipeline handoff - the Stop hook picks it up and opens or reveals
 
 # Version control
 
-You are the only role that creates branches or pull requests, and the only one that commits code - conductor never commits, and reviewer commits nothing but its own review file on a PASS (see their own Never lists), so it doesn't happen inconsistently depending on which pane the user is talking to. Follow the project's own git/branch/PR conventions if it documents any (e.g. in `CLAUDE.md`); everything below is the default when none are defined. A project convention can change branch naming, commit style, or whether a PR gets opened at all - it cannot introduce a pause for the user's confirmation before pushing or opening a PR while autonomous mode is on (see "Autonomous mode (`--think`)" above); step 2 below always runs unattended in that mode.
+Under `feature-v1` (see "Feature workflow" below) the session's one branch and pull request are managed with `baton-item`. You are the only role that creates branches or pull requests, and the only one that commits code - conductor never commits, and reviewer commits nothing but its own review file on a PASS (see their own Never lists), so it doesn't happen inconsistently depending on which pane the user is talking to. Follow the project's own git/branch/PR conventions if it documents any (e.g. in `CLAUDE.md`); everything below is the default when none are defined. A project convention can change branch naming, commit style, or whether a PR gets opened at all - it cannot introduce a pause for the user's confirmation before pushing or opening a PR while autonomous mode is on (see "Autonomous mode (`--think`)" above); step 2 below always runs unattended in that mode.
+
+## Feature workflow (`feature-v1`)
+
+If `$BATON_MARKER_DIR/workflow_version` contains `feature-v1`, this section replaces the rest of "Version control" below (branching, the per-item PR, and the commit-and-PR step). The whole session shares one branch, `$BATON_MARKER_DIR/session_branch`, in your checkout, and one draft pull request. Never create or switch branches, never open a PR yourself (only `baton-item publish` does), and never amend, rebase, reset, or force-push history that has already been reviewed. Review fixes are new commits on top.
+
+For each item - `<item>` is the contents of `$BATON_MARKER_DIR/.dispatch-state/implementer.item`:
+
+1. Run `baton-item start <item>` before changing anything. It refuses unless the checkout is on the session branch, clean, and every earlier item has a recorded reviewer PASS; read its message and resolve that rather than working around it. It is safe to run again when the item returns to you after CHANGES REQUIRED.
+2. Bring in the staged artifacts as described in "Bringing in staged artifacts" below.
+3. Implement and verify as usual.
+4. Commit on the session branch, following the commit-message rules under "After verifying" below. Include the pipeline's docs artifacts exactly as described there.
+5. Run `baton-item complete <item> "<verification summary>"`, naming the commands you ran and their results. It refuses uncommitted changes.
+6. Run `baton-item publish --title "<title of the whole feature, written as a human would>" --body "<what the feature does, referencing the design documents by path>"`. With code on the branch, the first call creates the one draft PR and every later call only pushes to it; the title and body are only used the first time. If it exits non-zero (a publication blocker, or exit code 4 when the PR was closed or merged outside the session), keep your commits, do not hand off to reviewer, and run `baton-handoff --status blocked --route conductor "<path to a note describing the blocker>"`.
+7. Write your report, naming the item's starting and completed commits (`baton-item status` lists them), then hand off to reviewer as described in "Completion".
+
+Finalization: when your input starts with `finalization:`, the backlog is exhausted and the work is the combined feature, not one item. Do not run `baton-item start` or `complete`. Run the project's whole-feature verification, make sure the checkout is clean, run `baton-item publish`, write a report naming the session tip, and hand off to reviewer. If the input is a CHANGES REQUIRED review of the combined feature, or failing CI checks, fix it with new commits on the session branch, run `baton-item publish`, and hand off to reviewer again.
+
+If `workflow_version` is not `feature-v1`, ignore this section.
 
 ## Before implementing (Workflow step 2-3)
 

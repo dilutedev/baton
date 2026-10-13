@@ -1,0 +1,477 @@
+#!/usr/bin/env bash
+# baton-item <command> ...
+# Records and checks the commit, review and publication evidence of a
+# feature-v1 session: every backlog item is committed on the session branch,
+# reviewed at an exact commit, and published to one draft pull request.
+#
+#   start <item>                          record the commit the item starts from
+#   complete <item> "<verification>"      record the item's completed commit
+#   publish [--title T] [--body B]        push the branch, create or reuse the draft PR
+#   review <item> PASS|CHANGES --commit SHA --report PATH [--summary TEXT]
+#   verify <item>                         succeed only for a recorded PASS on the completed commit
+#   gate <item>                           the check baton-handoff runs before a reviewer PASS counts
+#   status                                items, publication and finalization state
+#   final-start                           begin whole-feature finalization
+#   final-review PASS|CHANGES --commit SHA --report PATH [--summary TEXT]
+#   ready [--wait]                        mark the reviewed draft PR ready once checks pass
+set -euo pipefail
+
+fail() {
+  echo "baton-item: $*" >&2
+  exit 1
+}
+
+[ -n "${BATON_MARKER_DIR:-}" ] || fail "BATON_MARKER_DIR is not set"
+marker_dir="$BATON_MARKER_DIR"
+[ "$(cat "$marker_dir/workflow_version" 2>/dev/null || true)" = feature-v1 ] || fail "this session does not use the feature-v1 workflow"
+
+read_marker() { cat "$marker_dir/$1" 2>/dev/null || true; }
+
+worktree="$(read_marker worktree)"
+session_branch="$(read_marker session_branch)"
+base_branch="$(read_marker base_branch)"
+base_commit="$(read_marker base_commit)"
+remote="$(read_marker remote)"
+pr_repo="$(read_marker pr_repo)"
+items_dir="$marker_dir/items"
+final_dir="$marker_dir/final"
+project_root="$(cd "$marker_dir/../../.." && pwd)"
+
+[ -d "$worktree" ] || fail "session checkout '$worktree' is missing"
+
+git_in() { git -C "$worktree" "$@"; }
+head_commit() { git_in rev-parse HEAD; }
+goal_ref() { sed -n '1p' "$marker_dir/conductor-run" 2>/dev/null || true; }
+
+item_name() {
+  case "$1" in
+  "" | *[!A-Za-z0-9._-]*) fail "invalid item reference '$1'" ;;
+  esac
+  echo "$1"
+}
+
+item_value() { cat "$items_dir/$1/$2" 2>/dev/null || true; }
+final_value() { cat "$final_dir/$1" 2>/dev/null || true; }
+
+record() {
+  local dir="$1" name="$2" value="$3"
+  mkdir -p "$dir"
+  printf '%s\n' "$value" >"$dir/$name"
+}
+
+log_line() {
+  mkdir -p "$1"
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" >>"$1/log"
+}
+
+require_session_branch() {
+  local current
+  current="$(git_in rev-parse --abbrev-ref HEAD)"
+  [ "$current" = "$session_branch" ] || fail "the checkout is on '$current', not the session branch '$session_branch' - resolve this before continuing"
+}
+
+require_clean() {
+  local dirty
+  dirty="$(git_in status --porcelain)"
+  [ -z "$dirty" ] || fail "uncommitted changes in the session checkout - commit or discard them first:
+$(printf '%s\n' "$dirty" | head -n 10)"
+}
+
+resolve_commit() {
+  git_in rev-parse --verify --quiet "$1^{commit}" || fail "'$1' is not a commit in the session checkout"
+}
+
+report_exists() {
+  [ -f "$1" ] || [ -f "$project_root/$1" ] || [ -f "$worktree/$1" ]
+}
+
+json_field() {
+  python3 -c 'import json, sys
+value = json.loads(sys.argv[1])
+for key in sys.argv[2].split("."):
+    value = value[key]
+print(value)' "$1" "$2"
+}
+
+post_kata() {
+  local ref="$1" body="$2"
+  command -v kata >/dev/null 2>&1 || fail "kata is required to record review evidence"
+  kata comment "$ref" --teammate "${BATON_ROLE:-reviewer}" --body "$body" --workspace "$worktree" --agent >/dev/null ||
+    fail "could not record the evidence in kata"
+}
+
+require_pr_record() {
+  [ -n "$pr_repo" ] || fail "no GitHub repository is recorded for this session"
+  [ -n "$(read_marker pr_number)" ] || fail "no pull request is recorded yet - run 'baton-item publish'"
+}
+
+pr_json() {
+  gh pr view "$(read_marker pr_number)" --repo "$pr_repo" --json state,isDraft,headRefName,baseRefName,headRefOid,url
+}
+
+published_tip() {
+  git_in ls-remote "$remote" "refs/heads/$session_branch" 2>/dev/null | awk '{print $1; exit}'
+}
+
+verify_item() {
+  local item="$1" completed reviewed
+  completed="$(item_value "$item" completed_commit)"
+  reviewed="$(item_value "$item" reviewed_commit)"
+  [ -n "$completed" ] || { echo "item $item has no completed commit recorded" >&2; return 1; }
+  [ "$(item_value "$item" verdict)" = PASS ] || { echo "item $item has no recorded PASS for its latest completed commit" >&2; return 1; }
+  [ "$reviewed" = "$completed" ] || { echo "item $item was reviewed at ${reviewed:0:12}, not its completed commit ${completed:0:12}" >&2; return 1; }
+  git_in merge-base --is-ancestor "$completed" HEAD 2>/dev/null || { echo "item $item's reviewed commit is not on the session branch" >&2; return 1; }
+}
+
+all_items_verified() {
+  local dir item status=0
+  for dir in "$items_dir"/*/; do
+    [ -d "$dir" ] || continue
+    item="$(basename "$dir")"
+    verify_item "$item" || status=1
+  done
+  return $status
+}
+
+cmd_start() {
+  local item
+  item="$(item_name "${1:-}")"
+  require_session_branch
+  require_clean
+  local dir other
+  for dir in "$items_dir"/*/; do
+    [ -d "$dir" ] || continue
+    other="$(basename "$dir")"
+    [ "$other" != "$item" ] || continue
+    verify_item "$other" || fail "item $other has not passed review, so item $item cannot start"
+  done
+  if [ -z "$(item_value "$item" start_commit)" ]; then
+    record "$items_dir/$item" start_commit "$(head_commit)"
+    log_line "$items_dir/$item" "start $(head_commit)"
+  fi
+  echo "item $item starts from $(item_value "$item" start_commit)"
+}
+
+cmd_complete() {
+  local item summary start
+  item="$(item_name "${1:-}")"
+  summary="${2:-}"
+  [ -n "$summary" ] || fail "usage: baton-item complete <item> \"<verification summary>\""
+  start="$(item_value "$item" start_commit)"
+  [ -n "$start" ] || fail "item $item was never started - run 'baton-item start $item' before implementing"
+  require_session_branch
+  require_clean
+  git_in merge-base --is-ancestor "$start" HEAD || fail "the session branch no longer contains item $item's starting commit"
+  [ "$(head_commit)" != "$start" ] || fail "item $item has no commit on the session branch yet"
+  local dir="$items_dir/$item"
+  rm -f "$dir/verdict" "$dir/reviewed_commit" "$dir/review_path"
+  record "$dir" completed_commit "$(head_commit)"
+  record "$dir" verification "$summary"
+  log_line "$dir" "complete $(head_commit)"
+  echo "item $item completed at $(head_commit)"
+}
+
+cmd_publish() {
+  local title="" body=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --title) title="${2:?--title needs a value}"; shift 2 ;;
+    --body) body="${2:?--body needs a value}"; shift 2 ;;
+    *) fail "unknown publish option '$1'" ;;
+    esac
+  done
+  [ -n "$remote" ] && [ -n "$pr_repo" ] || fail "this session has no recorded GitHub remote"
+  require_session_branch
+  if [ "$(head_commit)" = "$base_commit" ]; then
+    echo "the session branch has no commits yet - nothing to publish"
+    return 0
+  fi
+  git_in push --quiet -u "$remote" "$session_branch" || fail "publication blocked: could not push '$session_branch' to '$remote' (diverged or unreachable) - local commits are kept; reconcile and retry"
+
+  local number url
+  number="$(read_marker pr_number)"
+  if [ -n "$number" ]; then
+    check_recorded_pr
+    echo "pull request #$number is up to date: $(read_marker pr_url)"
+    return 0
+  fi
+
+  local listing
+  listing="$(gh pr list --repo "$pr_repo" --head "$session_branch" --base "$base_branch" --state all --json number,url,state)" ||
+    fail "publication blocked: could not look up existing pull requests"
+  local open_pr
+  open_pr="$(python3 -c 'import json, sys
+for pr in json.loads(sys.argv[1]):
+    if pr["state"] == "OPEN":
+        print(pr["number"], pr["url"])
+        break' "$listing")"
+  if [ -n "$open_pr" ]; then
+    number="${open_pr%% *}"
+    url="${open_pr#* }"
+  elif [ "$listing" != "[]" ]; then
+    echo "baton-item: a pull request for '$session_branch' was already closed or merged - stopping rather than opening a replacement" >&2
+    exit 4
+  else
+    [ -n "$title" ] || title="$session_branch"
+    url="$(gh pr create --repo "$pr_repo" --draft --head "$session_branch" --base "$base_branch" --title "$title" --body "$body")" ||
+      fail "publication blocked: could not create the draft pull request (it is safe to rerun publish)"
+    url="$(printf '%s\n' "$url" | tail -n 1)"
+    number="${url##*/}"
+  fi
+  record "$marker_dir" pr_number "$number"
+  record "$marker_dir" pr_url "$url"
+  echo "pull request #$number: $url"
+}
+
+check_recorded_pr() {
+  local json state head base
+  json="$(pr_json)" || fail "publication blocked: could not read pull request #$(read_marker pr_number)"
+  state="$(json_field "$json" state)"
+  head="$(json_field "$json" headRefName)"
+  base="$(json_field "$json" baseRefName)"
+  if [ "$state" != OPEN ]; then
+    echo "baton-item: pull request #$(read_marker pr_number) is $state - the session's pull request changed state; stopping rather than opening a replacement" >&2
+    exit 4
+  fi
+  [ "$head" = "$session_branch" ] && [ "$base" = "$base_branch" ] ||
+    fail "pull request #$(read_marker pr_number) targets $head -> $base, expected $session_branch -> $base_branch"
+}
+
+review_arguments() {
+  verdict_word="" commit="" report="" summary=""
+  verdict_word="${1:-}"
+  shift || true
+  case "$verdict_word" in
+  PASS | CHANGES) ;;
+  *) fail "the verdict must be PASS or CHANGES" ;;
+  esac
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --commit) commit="${2:?--commit needs a value}"; shift 2 ;;
+    --report) report="${2:?--report needs a value}"; shift 2 ;;
+    --summary) summary="${2:?--summary needs a value}"; shift 2 ;;
+    *) fail "unknown option '$1'" ;;
+    esac
+  done
+  [ -n "$commit" ] && [ -n "$report" ] || fail "--commit and --report are required"
+  report_exists "$report" || fail "report '$report' does not exist"
+  commit="$(resolve_commit "$commit")"
+}
+
+cmd_review() {
+  local item verdict_word commit report summary completed
+  item="$(item_name "${1:-}")"
+  shift || true
+  review_arguments "$@"
+  completed="$(item_value "$item" completed_commit)"
+  [ -n "$completed" ] || fail "item $item has no completed commit to review"
+  if [ "$verdict_word" = PASS ]; then
+    [ "$commit" = "$completed" ] || fail "PASS must be for item $item's completed commit ${completed:0:12}, not ${commit:0:12}"
+    require_session_branch
+    [ "$commit" = "$(head_commit)" ] || fail "the session branch moved past the reviewed commit - review the current tip"
+    require_clean
+  fi
+  post_kata "$item" "review: $verdict_word
+item: $item
+start: $(item_value "$item" start_commit)
+reviewed: $commit
+completed: $completed
+report: $report
+verification: $(item_value "$item" verification)
+summary: $summary"
+  local dir="$items_dir/$item"
+  record "$dir" verdict "$verdict_word"
+  record "$dir" reviewed_commit "$commit"
+  record "$dir" review_path "$report"
+  log_line "$dir" "review $verdict_word $commit"
+  echo "item $item: $verdict_word recorded for ${commit:0:12}"
+}
+
+cmd_verify() {
+  local item
+  item="$(item_name "${1:-}")"
+  verify_item "$item" || exit 1
+  echo "item $item: PASS at $(item_value "$item" reviewed_commit) (report $(item_value "$item" review_path))"
+}
+
+final_evidence() {
+  local reviewed
+  [ "$(final_value verdict)" = PASS ] || { echo "the combined feature has no recorded final PASS" >&2; return 1; }
+  reviewed="$(final_value reviewed_commit)"
+  [ "$reviewed" = "$(head_commit)" ] || { echo "the session branch moved after the final review (${reviewed:0:12} -> $(head_commit | cut -c1-12))" >&2; return 1; }
+}
+
+cmd_gate() {
+  local item
+  item="$(item_name "${1:-}")"
+  require_session_branch
+  local dirty
+  dirty="$(git_in status --porcelain)"
+  [ -z "$dirty" ] || { echo "the session checkout has uncommitted changes" >&2; exit 1; }
+  if [ -f "$final_dir/phase" ] && [ "$item" = "$(goal_ref)" ]; then
+    final_evidence || exit 1
+    return 0
+  fi
+  verify_item "$item" || exit 1
+  [ "$(item_value "$item" reviewed_commit)" = "$(head_commit)" ] || {
+    echo "the session branch moved past item $item's reviewed commit" >&2
+    exit 1
+  }
+}
+
+cmd_status() {
+  echo "branch $session_branch at $(head_commit | cut -c1-12), base $base_branch"
+  local build
+  build="$(cat "$marker_dir/.dispatch-state/build.item" 2>/dev/null || true)"
+  echo "build item: ${build:-none}"
+  local dir item
+  for dir in "$items_dir"/*/; do
+    [ -d "$dir" ] || continue
+    item="$(basename "$dir")"
+    printf 'item %s: start %s completed %s review %s@%s\n' "$item" \
+      "$(item_value "$item" start_commit | cut -c1-12)" "$(item_value "$item" completed_commit | cut -c1-12)" \
+      "$(item_value "$item" verdict)" "$(item_value "$item" reviewed_commit | cut -c1-12)"
+  done
+  if [ -n "$(read_marker pr_number)" ]; then
+    echo "pull request: $(read_marker pr_url)"
+  else
+    echo "pull request: none yet"
+  fi
+  if [ -f "$final_dir/phase" ]; then
+    echo "finalization: $(final_value phase), final review $(final_value verdict)@$(final_value reviewed_commit | cut -c1-12)"
+  else
+    echo "finalization: not started"
+  fi
+  if [ -n "$(git_in status --porcelain)" ]; then
+    echo "checkout: uncommitted changes"
+  fi
+  local tip
+  tip="$(published_tip || true)"
+  if [ -z "$tip" ]; then
+    echo "published: no (or remote unreachable)"
+  elif [ "$tip" = "$(head_commit)" ]; then
+    echo "published: yes"
+  else
+    echo "published: remote is at ${tip:0:12}, local is $(head_commit | cut -c1-12)"
+  fi
+}
+
+cmd_final_start() {
+  require_session_branch
+  require_clean
+  all_items_verified || fail "not every item has a recorded PASS on its completed commit"
+  [ -n "$(goal_ref)" ] || fail "no goal reference is recorded (conductor-run is missing)"
+  rm -f "$final_dir/verdict" "$final_dir/reviewed_commit" "$final_dir/report"
+  record "$final_dir" phase review
+  log_line "$final_dir" "start $(head_commit)"
+  echo "finalization started at $(head_commit) for goal $(goal_ref)"
+}
+
+cmd_final_review() {
+  local verdict_word commit report summary
+  [ -f "$final_dir/phase" ] || fail "finalization has not started - the conductor runs 'baton-item final-start'"
+  review_arguments "$@"
+  if [ "$verdict_word" = PASS ]; then
+    require_session_branch
+    require_clean
+    require_pr_record
+    [ "$commit" = "$(head_commit)" ] || fail "PASS must be for the current session tip $(head_commit | cut -c1-12)"
+    [ "$(published_tip)" = "$commit" ] || fail "the session tip is not pushed - run 'baton-item publish' first"
+    local json
+    json="$(pr_json)" || fail "could not read the pull request"
+    [ "$(json_field "$json" headRefOid)" = "$commit" ] || fail "the pull request head is not the reviewed commit"
+    [ "$(json_field "$json" baseRefName)" = "$base_branch" ] || fail "the pull request no longer targets $base_branch"
+  fi
+  post_kata "$(goal_ref)" "final review: $verdict_word
+reviewed: $commit
+report: $report
+pull request: $(read_marker pr_url)
+summary: $summary"
+  record "$final_dir" verdict "$verdict_word"
+  record "$final_dir" reviewed_commit "$commit"
+  record "$final_dir" report "$report"
+  log_line "$final_dir" "review $verdict_word $commit"
+  echo "final review: $verdict_word recorded for ${commit:0:12}"
+}
+
+checks_state() {
+  local output
+  output="$(gh pr checks "$(read_marker pr_number)" --repo "$pr_repo" --json bucket 2>&1 || true)"
+  if printf '%s' "$output" | grep -qi "no checks reported"; then
+    echo none
+    return
+  fi
+  python3 -c 'import json, sys
+try:
+    buckets = [check["bucket"] for check in json.loads(sys.argv[1])]
+except Exception:
+    print("error")
+    sys.exit(0)
+if any(bucket in ("fail", "cancel") for bucket in buckets):
+    print("failing")
+elif any(bucket == "pending" for bucket in buckets):
+    print("pending")
+else:
+    print("passing")' "$output"
+}
+
+cmd_ready() {
+  local wait=0
+  [ "${1:-}" != "--wait" ] || wait=1
+  [ -f "$final_dir/phase" ] || fail "finalization has not started"
+  require_session_branch
+  require_clean
+  require_pr_record
+  final_evidence || exit 1
+  local json
+  json="$(pr_json)" || fail "could not read the pull request"
+  [ "$(json_field "$json" state)" = OPEN ] || { echo "baton-item: the pull request is $(json_field "$json" state)" >&2; exit 4; }
+  [ "$(json_field "$json" headRefOid)" = "$(head_commit)" ] || fail "the pull request head is not the reviewed session tip - publish and review again"
+  [ "$(json_field "$json" baseRefName)" = "$base_branch" ] || fail "the pull request no longer targets $base_branch"
+
+  local deadline state
+  deadline=$(($(date +%s) + ${BATON_CHECK_TIMEOUT_SECONDS:-1800}))
+  while true; do
+    state="$(checks_state)"
+    case "$state" in
+    failing)
+      echo "baton-item: required checks are failing on the pull request - route the failure to implementer" >&2
+      exit 3
+      ;;
+    error) fail "could not read the pull request's checks" ;;
+    pending)
+      if [ "$wait" != 1 ] || [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "baton-item: checks are still running - finalization is waiting" >&2
+        exit 2
+      fi
+      sleep "${BATON_CHECK_POLL_SECONDS:-30}"
+      ;;
+    *) break ;;
+    esac
+  done
+
+  if [ "$(json_field "$json" isDraft)" = True ]; then
+    gh pr ready "$(read_marker pr_number)" --repo "$pr_repo" >/dev/null || fail "could not mark the pull request ready"
+  fi
+  record "$final_dir" phase ready
+  log_line "$final_dir" "ready $(head_commit)"
+  post_kata "$(goal_ref)" "ready to merge: $(read_marker pr_url)
+reviewed: $(head_commit)"
+  echo "ready to merge: $(read_marker pr_url)"
+}
+
+command_name="${1:-}"
+shift || true
+case "$command_name" in
+start) cmd_start "$@" ;;
+complete) cmd_complete "$@" ;;
+publish) cmd_publish "$@" ;;
+review) cmd_review "$@" ;;
+verify) cmd_verify "$@" ;;
+gate) cmd_gate "$@" ;;
+status) cmd_status "$@" ;;
+final-start) cmd_final_start "$@" ;;
+final-review) cmd_final_review "$@" ;;
+ready) cmd_ready "$@" ;;
+*) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
+esac

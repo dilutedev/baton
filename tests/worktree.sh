@@ -210,7 +210,7 @@ git -C "$upstream" push -q origin main
 remote_tip="$(git -C "$upstream" rev-parse main)"
 [ "$(git -C "$test_root/clone" rev-parse refs/remotes/origin/main)" != "$remote_tip" ]
 
-"$baton" start --yes "$test_root/clone" >/dev/null
+"$baton" start --yes --workflow worktree-v1 "$test_root/clone" >/dev/null
 clone_marker="$test_root/clone/.baton/s/$(only_session "$test_root/clone")"
 [ "$(cat "$clone_marker/remote")" = origin ]
 [ "$(cat "$clone_marker/base_branch")" = main ]
@@ -218,7 +218,7 @@ clone_marker="$test_root/clone/.baton/s/$(only_session "$test_root/clone")"
 [ "$(cat "$clone_marker/base_commit")" = "$remote_tip" ]
 [ "$(git -C "$(cat "$clone_marker/worktree")" rev-parse HEAD)" = "$remote_tip" ]
 
-"$baton" start --yes --base origin/develop "$test_root/clone" >/dev/null
+"$baton" start --yes --workflow worktree-v1 --base origin/develop "$test_root/clone" >/dev/null
 develop_marker="$(ls -dt "$test_root"/clone/.baton/s/*/ | head -n1)"
 [ "$(cat "${develop_marker}remote")" = origin ]
 [ "$(cat "${develop_marker}base_branch")" = develop ]
