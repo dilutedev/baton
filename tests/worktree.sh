@@ -155,6 +155,16 @@ grep -q "uncommitted" "$test_root/dirty-output"
 ! grep -q "workspace close" "$HERDR_LOG"
 
 git -C "$first_worktree" checkout -q -- file.txt
+printf 'SECRET=1\n' >"$first_worktree/.env"
+printf '.env\n' >>"$local_repo/.git/info/exclude"
+if "$baton" remove "$first_session" "$local_repo" >"$test_root/ignored-output" 2>&1; then
+  echo "removing a worktree with ignored files should be refused"
+  exit 1
+fi
+grep -q "ignored files" "$test_root/ignored-output"
+grep -q "\.env" "$test_root/ignored-output"
+[ -f "$first_worktree/.env" ]
+rm "$first_worktree/.env"
 "$baton" remove "$first_session" "$local_repo" >"$test_root/remove-output"
 [ ! -e "$first_marker" ] && [ ! -e "$first_worktree" ]
 git -C "$local_repo" rev-parse --verify -q "refs/heads/baton/$first_session" >/dev/null

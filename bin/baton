@@ -1331,6 +1331,13 @@ check_session_worktree_removable() {
     echo "baton: $worktree_path has uncommitted changes - commit or discard them before removing this session" >&2
     return 1
   fi
+  local ignored_entries
+  ignored_entries="$(git -C "$worktree_path" status --porcelain --ignored 2>/dev/null | sed -n 's/^!! //p')"
+  if [ -n "$ignored_entries" ]; then
+    echo "baton: $worktree_path has ignored files that removal would delete - move or delete them first:" >&2
+    printf '%s\n' "$ignored_entries" | head -n 10 | sed 's/^/  /' >&2
+    return 1
+  fi
 }
 
 remove_session_worktree() {

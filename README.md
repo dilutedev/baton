@@ -202,7 +202,7 @@ clean up.
 
 `baton remove` closes the run if it's running, deletes the worktree, then
 deletes only `DIR/.baton/s/<uuid>/`. It refuses if the worktree has uncommitted
-changes. The `baton/<uuid>` branch and any item branches stay, so pushed or
+changes or ignored files (such as a hand-copied `.env`). The `baton/<uuid>` branch and any item branches stay, so pushed or
 unpushed work isn't lost. Other runs, project files, kata items, and agent
 transcripts stay.
 
