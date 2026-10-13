@@ -50,7 +50,7 @@ for you to review it, and only starts dispatching once you tell it to continue.
 | **researcher** | Investigates how the current implementation works. |
 | **planner** | Writes a Planning Brief. |
 | **principal** | Produces an implementation design. |
-| **implementer** | Implements the approved design. The only role that creates branches and pull requests. |
+| **implementer** | Implements the approved design. The only role that commits code, creates branches, and publishes pull requests (one per session under `feature-v1`). |
 | **reviewer** | Reviews the implementation and returns PASS or CHANGES REQUIRED. |
 
 Each persona lives in `prompts/<role>.prompt.md`. Simple items can skip ahead
@@ -65,6 +65,9 @@ Each persona lives in `prompts/<role>.prompt.md`. Simple items can skip ahead
   (see [Backlog tracking](#backlog-tracking)). Run `kata init` once per project
   before its first `baton start`; the conductor also does this itself if it
   hasn't been done.
+- [`gh`](https://cli.github.com/), authenticated (`gh auth login`) - only for the
+  default `feature-v1` workflow, which publishes one pull request to a GitHub
+  remote (see [One PR per feature](#one-pr-per-feature))
 - `uuidgen` (ships with macOS and most Linux distros)
 - `bash` 3.2+ (the scripts avoid associative arrays for macOS's stock bash)
 - `python3` - used by `install.sh` to merge the Stop hook into
@@ -246,8 +249,8 @@ clean up.
 
 `baton remove` closes the run if it's running, deletes the worktree, then
 deletes only `DIR/.baton/s/<uuid>/`. It refuses if the worktree has uncommitted
-changes or ignored files (such as a hand-copied `.env`). The `baton/<uuid>` branch and any item branches stay, so pushed or
-unpushed work isn't lost. Other runs, project files, kata items, and agent
+changes or ignored files (such as a hand-copied `.env`). The `baton/<uuid>`
+branch and any item branches stay, so pushed or unpushed work isn't lost. Other runs, project files, kata items, and agent
 transcripts stay.
 
 ### The start/resume screen
@@ -356,7 +359,8 @@ BATON_MAX_IN_FLIGHT=2 baton start .
 - Implementer builds strictly one item at a time: once it takes an item, it
   only gets that item's handoffs (fixes after CHANGES REQUIRED, answers to its
   questions) until reviewer passes it. All panes share one checkout, so the
-  next item's build waits for this one's branch to be done.
+  next item's build waits for this one to be done: its branch under
+  `worktree-v1`, its reviewed commit on the session branch under `feature-v1`.
 - Stale designs: implementer re-checks each design against the code before
   building, and bounces it to principal if it no longer fits.
 - Context: a pane is sent `/clear` whenever it switches to a different item
@@ -365,8 +369,9 @@ BATON_MAX_IN_FLIGHT=2 baton start .
   and principal write their briefs and designs to
   `.baton/s/<instance>/staging/<item>/` (gitignored, at the same relative
   paths they'd have in the repo) instead of the checkout, which may be on
-  another item's branch. Implementer moves them into the repo on the item's own
-  branch and commits them with the code.
+  another item's branch. Implementer moves them into the repo and commits them
+  with the code: on the item's own branch under `worktree-v1`, on the session
+  branch under `feature-v1`.
 - An item labeled `checkpoint` runs alone, so the run can pause after it.
 
 **Known limits:**
@@ -549,6 +554,12 @@ on a laptop, six equal panes are each too small to read comfortably. Two fixes:
   herdr reports its turn over. A pane switching to a different backlog item is
   sent `/clear` first. This is what lets several items be in flight at once:
   work for a busy role waits in its queue instead of interrupting it.
+- **`bin/baton-item`** records and checks a `feature-v1` session's evidence:
+  each item's start, completed and reviewed commits, the one draft PR
+  (`publish`), and finalization (`final-start`, `final-review`, `ready`). It
+  runs inside the role's own shell, like `baton-handoff`, and
+  `baton-handoff` calls its `gate` to refuse a reviewer PASS without matching
+  evidence. See [One PR per feature](#one-pr-per-feature).
 - **`bin/baton-msg <role> "<text>"`** is fire-and-forget: it types text into
   another role's pane (for example the conductor poking a stuck implementer). It
   never waits for a reply and never advances the pipeline.
@@ -583,15 +594,22 @@ on a laptop, six equal panes are each too small to read comfortably. Two fixes:
 | `BATON_MAX_ITEMS` | you (optional) | Cap on backlog items the conductor completes in a run |
 | `BATON_MAX_IN_FLIGHT` | you (optional) | How many backlog items the conductor keeps in flight at once (default 4, `1` = one at a time). See [Several items in flight](#several-items-in-flight) |
 | `BATON_THINK` | you (optional) | `1` turns on autonomous mode, same as `baton start --think` |
+| `BATON_CHECK_TIMEOUT_SECONDS` | you (optional) | How long `baton-item ready --wait` waits for pending PR checks (default 1800) |
+| `BATON_CHECK_POLL_SECONDS` | you (optional) | How often `baton-item ready --wait` polls the checks (default 30) |
+| `ZAI_API_KEY` | you (for `glm-*` models) | z.ai API key, see [Using z.ai / GLM models](#using-zai--glm-models) |
 
 `BATON_MAX_ITEMS`, `BATON_MAX_IN_FLIGHT` and `BATON_THINK` are read when you
 run `baton start`/`resume` and passed into every pane (panes don't otherwise
 see the environment `baton` runs in). To change one mid-run, `baton stop` and
 `baton resume` with the new value.
-| `ZAI_API_KEY` | you (for `glm-*` models) | z.ai API key, see [Using z.ai / GLM models](#using-zai--glm-models) |
 
 ## Tests
 
 The scripts in `tests/` are plain bash with no framework; run one with
 `bash tests/<name>.sh` (`claude2`, `courier`, `dispatch`, `env`, `handoff`,
-`nudge`, `remove`, `status`, `update`, `worktree`, `feature`).
+`nudge`, `remove`, `status`, `update`, `worktree`, `feature`). `worktree` covers
+base resolution and the session worktree lifecycle against stubbed herdr and
+kata. `feature` covers the `feature-v1` item gate, publication, finalization,
+resume and remove against a local bare repository, with `gh` stubbed. Neither
+launches real agents or touches GitHub; `tests/spike/` holds the manual
+sandbox and handoff probes for real panes.
