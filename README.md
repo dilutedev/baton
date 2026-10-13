@@ -186,16 +186,18 @@ The session branch starts from `--base`:
 
 The base, its commit, and its remote are recorded in the marker dir
 (`base_branch`, `base_ref`, `base_commit`, `remote`), along with
-`workflow_version`. Sessions started before worktrees existed have no
-`workflow_version` and keep their old behavior: panes run in `DIR` and roles may
-still create a worktree themselves. A recorded version is never changed by
-`update` or `resume`.
+`workflow_version`, which says how the session turns backlog items into
+branches and pull requests. It is fixed when the session starts, and `update`
+and `resume` never change it.
 
-| `workflow_version` | When | Behavior |
+| `workflow_version` | Chosen when | What a session produces |
 |---|---|---|
-| (absent) | sessions from before worktrees | roles run in `DIR`; item branches and per-item PRs |
-| `worktree-v1` | `--workflow worktree-v1`, or a base with no remote | own worktree; item branches and per-item PRs, as before |
-| `feature-v1` | default when the base is on a GitHub remote | own worktree; one branch and one PR (below) |
+| `feature-v1` | the base is on a GitHub remote (the default there) | one session branch with the reviewed commits of every backlog item, and **one draft PR** for the whole goal ([details](#one-pr-per-feature)) |
+| `worktree-v1` | the base has no remote, or you pass `--workflow worktree-v1` | one branch per backlog item, cut from trunk (or from an unmerged item it depends on), each with its own PR into trunk when the repository has a remote and `gh` is available |
+
+Pass `--workflow` to override the default, for example `--workflow worktree-v1`
+for a GitLab remote. Instances created by an older baton release have no
+`workflow_version`; they run in `DIR` itself instead of a worktree.
 
 ### One PR per feature
 
@@ -584,7 +586,7 @@ on a laptop, six equal panes are each too small to read comfortably. Two fixes:
 
 | Variable | Set by | Meaning |
 |---|---|---|
-| `BATON_ROOT` | `baton` | The run's working directory: its session worktree (or the project directory for sessions that predate worktrees) |
+| `BATON_ROOT` | `baton` | The run's working directory: its session worktree (or the project directory for instances created by an older baton release) |
 | `BATON_MARKER_DIR` | `baton` | This run's `.baton/s/<uuid>/` dir |
 | `BATON_ROLE` | `baton` | This pane's role name |
 | `BATON_PROMPT_DIR` | you (optional) | Override where role `.prompt.md` files live |
