@@ -59,7 +59,7 @@ BATON_USE_COLOR=0
 usage() {
   cat <<'EOF'
 Usage:
-  baton start [--base BRANCH] [--workflow feature|worktree] [--think] [--yes] [DIR]
+  baton start [--base BRANCH] [--workflow|-w feature|worktree] [--think] [--yes] [DIR]
                                        Start a new instance for DIR (default: cwd) in its own git worktree,
                                        branched from BASE (default: the remote's default branch)
   baton status [DIR]                   List every instance for DIR, running or stopped
@@ -1157,7 +1157,7 @@ cmd_start() {
       requested_base="$2"
       shift
       ;;
-    --workflow)
+    --workflow | -w)
       [ "$#" -ge 2 ] || { echo "baton: --workflow needs feature or worktree" >&2; exit 1; }
       case "$2" in
       feature | worktree) workflow="$2" ;;

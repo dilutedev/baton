@@ -144,7 +144,7 @@ update, `baton stop` it and `baton resume` it.
 ## Usage
 
 ```
-baton start [--base BRANCH] [--workflow feature|worktree] [--think] [--yes] [DIR]
+baton start [--base BRANCH] [--workflow|-w feature|worktree] [--think] [--yes] [DIR]
                                      Start a new instance for DIR (default: cwd) in its own git worktree
 baton status [DIR]                   List every instance for DIR, running or stopped
 baton attach [REF] [DIR]             Switch into a running instance (REF: slug or uuid)
@@ -195,7 +195,7 @@ and `resume` never change it.
 | `feature` | the base is on a GitHub remote (the default there) | one session branch with the reviewed commits of every backlog item, and **one draft PR** for the whole goal ([details](#one-pr-per-feature)) |
 | `worktree` | the base has no remote, or you pass `--workflow worktree` | one branch per backlog item, cut from trunk (or from an unmerged item it depends on), each with its own PR into trunk when the repository has a remote and `gh` is available |
 
-Pass `--workflow` to override the default, for example `--workflow worktree`
+Pass `--workflow` (or `-w`) to override the default, for example `-w worktree`
 for a GitLab remote. Instances created by an older baton release have no
 `workflow`; they run in `DIR` itself instead of a worktree.
 
