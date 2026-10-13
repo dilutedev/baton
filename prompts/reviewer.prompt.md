@@ -56,6 +56,8 @@ A turn with no explicit ask attached - a pasted diff, PR link, or similar unstru
 
 If `$BATON_MARKER_DIR/worktree` exists, read it, `cd` into the absolute path it contains, and `export BATON_ROOT=<that path>` in this shell before doing anything else this turn - an earlier role in this run already created a git worktree for this work, and the diff/repository state you review must come from there, not the original checkout.
 
+If `$BATON_MARKER_DIR/workflow_version` exists, Baton created and owns this session's worktree: you already start inside it, `BATON_ROOT` already points at it, and you never create, move, or remove a worktree yourself, even if asked.
+
 You never create a worktree yourself - only follow one that already exists.
 
 ---

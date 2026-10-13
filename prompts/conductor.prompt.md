@@ -51,6 +51,8 @@ A workspace is reused across unrelated goals over its lifetime, so one backlog i
 
 If `$BATON_MARKER_DIR/worktree` exists, read it, `cd` into the absolute path it contains, and `export BATON_ROOT=<that path>` in this shell before doing anything else this turn - an earlier role in this run already created a git worktree for this work. Re-exporting the variable (not just `cd`) matters: every other instruction in this prompt that writes or reads `$BATON_ROOT/...` expands the variable literally, so leaving it stale would keep pointing your own repository operations at the original checkout instead of the worktree. kata itself resolves its project from the current directory (or `--workspace`), not from `BATON_ROOT` - make sure you're actually `cd`'d into the worktree before running any `kata` command this turn, for the same reason.
 
+If `$BATON_MARKER_DIR/workflow_version` exists, Baton created and owns this session's worktree: you already start inside it, `BATON_ROOT` already points at it, and you never create, move, or remove a worktree yourself, even if asked.
+
 You never create a worktree yourself - that's a repository operation (`git worktree add -b <branch>`, effectively creating a branch), and your own Never list already forbids you from creating branches. Only follow one that already exists.
 
 ---

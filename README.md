@@ -141,12 +141,13 @@ update, `baton stop` it and `baton resume` it.
 ## Usage
 
 ```
-baton start [--think] [--yes] [DIR]  Start a new instance for DIR (default: cwd)
+baton start [--base BRANCH] [--think] [--yes] [DIR]
+                                     Start a new instance for DIR (default: cwd) in its own git worktree
 baton status [DIR]                   List every instance for DIR, running or stopped
 baton attach [REF] [DIR]             Switch into a running instance (REF: slug or uuid)
 baton resume [--yes] [REF] [DIR]     Relaunch a stopped instance's panes (fresh sessions, same instance)
 baton stop [REF] [DIR]               Kill a running instance
-baton remove [REF] [DIR]             Stop and delete one instance's Baton files
+baton remove [REF] [DIR]             Stop and delete one instance's Baton files and its worktree
 baton config [DIR]                   Show each role's resolved tool/model/effort/layout for DIR
 baton update                         Pull the latest baton from GitHub into this install
 ```
@@ -156,17 +157,53 @@ uuid; once its conductor persists a backlog, the run also gets the backlog's
 `slug`, so you can address it by name.
 
 A directory can have several concurrent runs, each with its own herdr
-workspace/tab and marker dir under `DIR/.baton/s/<uuid>/`. `baton start` adds
-`.baton/` to that directory's `.gitignore` if it's inside a git repo: it's
-per-project runtime state (hand-off markers, dispatch bookkeeping), not
-something to commit.
+workspace and marker dir under `DIR/.baton/s/<uuid>/`. `baton start` adds
+`.baton/` to the repository's local `.git/info/exclude`, so your tracked files
+stay untouched: it's per-project runtime state (hand-off markers, dispatch
+bookkeeping), not something to commit.
 
-Run `baton start`/`resume` from inside a herdr pane and it adds a tab to your
-current workspace; from outside herdr it creates a dedicated workspace. Either
-way, `baton stop` closes only what that run created, never your other panes.
+### Session worktrees
 
-`baton remove` closes the run if it's running, then deletes only
-`DIR/.baton/s/<uuid>/`. Other runs, project files, kata items, and agent
+`DIR` must be a git repository. Each `baton start` creates a branch
+`baton/<uuid>` and a git worktree for it (under `~/.baton-worktrees/`, or
+`$BATON_WORKTREE_DIR`), then launches every role inside that worktree. Your own
+checkout, branch, and uncommitted changes are never touched, and two sessions
+never share files. The marker dir stays under `DIR/.baton/s/<uuid>/`, and every
+`baton` command still works from inside a session's worktree.
+
+The session branch starts from `--base`:
+
+- `--base main` starts from that local branch's committed tip.
+- `--base origin/main` first fetches that branch, then starts from it.
+- Without `--base`, baton uses the remote's default branch (`origin/HEAD`). If
+  that can't be determined, for example in a repository with no remote, it
+  stops and asks for `--base`.
+- Tags and commit ids are rejected. With several remotes, name the remote
+  (`--base origin/main`) instead of a bare local branch.
+
+The base, its commit, and its remote are recorded in the marker dir
+(`base_branch`, `base_ref`, `base_commit`, `remote`), along with
+`workflow_version` (`worktree-v1`). Sessions started before worktrees existed
+have no `workflow_version` and keep their old behavior: panes run in `DIR` and
+roles may still create a worktree themselves.
+
+Item branches and PR targets are unchanged: items still branch from trunk or
+from an unmerged blocker, and PRs still target trunk. The worktree changes
+where the work happens, not how it is integrated.
+
+A worktree is a fresh checkout, so it doesn't contain ignored files. `.env`
+files, installed dependencies, databases, and port numbers are not shared or
+isolated for you.
+
+`baton stop` closes the session's workspace and keeps the checkout, branches,
+and state. `baton resume` relaunches the roles in the same checkout. If startup
+fails partway, the checkout is kept so `resume` can retry or `remove` can
+clean up.
+
+`baton remove` closes the run if it's running, deletes the worktree, then
+deletes only `DIR/.baton/s/<uuid>/`. It refuses if the worktree has uncommitted
+changes. The `baton/<uuid>` branch and any item branches stay, so pushed or
+unpushed work isn't lost. Other runs, project files, kata items, and agent
 transcripts stay.
 
 ### The start/resume screen
@@ -492,12 +529,13 @@ on a laptop, six equal panes are each too small to read comfortably. Two fixes:
 
 | Variable | Set by | Meaning |
 |---|---|---|
-| `BATON_ROOT` | `baton` | The project directory the run was started for |
+| `BATON_ROOT` | `baton` | The run's working directory: its session worktree (or the project directory for sessions that predate worktrees) |
 | `BATON_MARKER_DIR` | `baton` | This run's `.baton/s/<uuid>/` dir |
 | `BATON_ROLE` | `baton` | This pane's role name |
 | `BATON_PROMPT_DIR` | you (optional) | Override where role `.prompt.md` files live |
 | `BATON_CONF` | you (optional) | Override the global `baton.conf` path |
 | `BATON_MODELS` | you (optional) | Override the `models.json` path |
+| `BATON_WORKTREE_DIR` | you (optional) | Where session worktrees are created (default `~/.baton-worktrees`) |
 | `BATON_MAX_ITEMS` | you (optional) | Cap on backlog items the conductor completes in a run |
 | `BATON_MAX_IN_FLIGHT` | you (optional) | How many backlog items the conductor keeps in flight at once (default 4, `1` = one at a time). See [Several items in flight](#several-items-in-flight) |
 | `BATON_THINK` | you (optional) | `1` turns on autonomous mode, same as `baton start --think` |
@@ -512,4 +550,4 @@ see the environment `baton` runs in). To change one mid-run, `baton stop` and
 
 The scripts in `tests/` are plain bash with no framework; run one with
 `bash tests/<name>.sh` (`claude2`, `courier`, `dispatch`, `env`, `handoff`,
-`nudge`, `remove`, `status`, `update`).
+`nudge`, `remove`, `status`, `update`, `worktree`).

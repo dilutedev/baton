@@ -59,7 +59,9 @@ BATON_USE_COLOR=0
 usage() {
   cat <<'EOF'
 Usage:
-  baton start [--think] [--yes] [DIR]  Start a new instance for DIR (default: cwd)
+  baton start [--base BRANCH] [--think] [--yes] [DIR]
+                                       Start a new instance for DIR (default: cwd) in its own git worktree,
+                                       branched from BASE (default: the remote's default branch)
   baton status [DIR]                   List every instance for DIR, running or stopped
   baton attach [REF] [DIR]             Switch into a running instance (REF: slug or uuid)
   baton resume [--yes] [REF] [DIR]     Relaunch a stopped instance's panes (fresh sessions, same instance)
@@ -190,7 +192,70 @@ parse_ref_dir_args() {
       REF="$arg"
     fi
   done
-  DIR="$(cd "$DIR" && pwd)"
+  DIR="$(main_checkout_root "$(cd "$DIR" && pwd)")"
+}
+
+main_checkout_root() {
+  local dir="$1" toplevel common main_root
+  toplevel="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || { echo "$dir"; return; }
+  common="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || { echo "$dir"; return; }
+  main_root="${common%/.git}"
+  if [ "$common" != "$main_root" ] && [ "$toplevel" != "$main_root" ]; then
+    echo "$main_root"
+  else
+    echo "$dir"
+  fi
+}
+
+detect_default_base() {
+  local repo="$1" remote_names="$2" remote_name
+  if printf '%s\n' "$remote_names" | grep -qx origin; then
+    remote_name=origin
+  elif [ "$(printf '%s\n' "$remote_names" | grep -c .)" = 1 ]; then
+    remote_name="$remote_names"
+  else
+    return 1
+  fi
+  git -C "$repo" symbolic-ref --short "refs/remotes/$remote_name/HEAD" 2>/dev/null
+}
+
+resolve_base() {
+  local repo="$1" requested="$2" remote_names remote_count first_part
+  BASE_REF="" BASE_REMOTE="" BASE_TARGET="" BASE_COMMIT=""
+  remote_names="$(git -C "$repo" remote)"
+  remote_count="$(printf '%s\n' "$remote_names" | grep -c . || true)"
+
+  if [ -z "$requested" ]; then
+    requested="$(detect_default_base "$repo" "$remote_names")" || {
+      echo "baton: cannot determine the default base branch for $repo - pass --base <branch>" >&2
+      return 1
+    }
+  fi
+
+  first_part="${requested%%/*}"
+  if [ "$first_part" != "$requested" ] && printf '%s\n' "$remote_names" | grep -qx -- "$first_part"; then
+    BASE_REMOTE="$first_part"
+    BASE_TARGET="${requested#*/}"
+    git -C "$repo" fetch --quiet "$BASE_REMOTE" "+refs/heads/$BASE_TARGET:refs/remotes/$BASE_REMOTE/$BASE_TARGET" 2>/dev/null || {
+      echo "baton: could not refresh branch '$BASE_TARGET' from remote '$BASE_REMOTE' - check the name and your network" >&2
+      return 1
+    }
+    BASE_COMMIT="$(git -C "$repo" rev-parse --verify --quiet "refs/remotes/$BASE_REMOTE/$BASE_TARGET^{commit}")"
+  elif BASE_COMMIT="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$requested^{commit}")"; then
+    BASE_TARGET="$requested"
+    case "$remote_count" in
+    0) ;;
+    1) BASE_REMOTE="$remote_names" ;;
+    *)
+      echo "baton: '$requested' is a local branch and this repository has several remotes ($(echo $remote_names)) - pass --base <remote>/$requested" >&2
+      return 1
+      ;;
+    esac
+  else
+    echo "baton: base '$requested' is not a branch - use a local branch name or <remote>/<branch> (tags and commits can't be PR targets)" >&2
+    return 1
+  fi
+  BASE_REF="$requested"
 }
 
 # config_get <file> <key> -> last matching "key = value" line's value, if any.
@@ -819,7 +884,7 @@ layout_split_plan() {
 # reconnect a role to its previous conversation (see baton.conf's header).
 # Prints "<workspace_id> <tab_id>".
 spawn_pipeline_panes() {
-  local dir="$1" name="$2" marker_dir="$3"
+  local dir="$1" name="$2" marker_dir="$3" work_dir="${4:-$1}"
   local agents_file="$marker_dir/agents.map"
   : >"$agents_file"
 
@@ -844,11 +909,11 @@ spawn_pipeline_panes() {
     efforts[$idx]="$(resolve_setting "$dir" "$role" effort)"
     tools[$idx]="$(resolve_setting "$dir" "$role" tool)"
     case "${tools[$idx]}" in
-    claude) prepare_profile "$dir" "$HOME/.claude" "$HOME/.claude.json" ;;
-    claude2) prepare_profile "$dir" "$CLAUDE2_CONFIG_DIR" "$CLAUDE2_CONFIG_DIR/.claude.json" ;;
+    claude) prepare_profile "$work_dir" "$HOME/.claude" "$HOME/.claude.json" ;;
+    claude2) prepare_profile "$work_dir" "$CLAUDE2_CONFIG_DIR" "$CLAUDE2_CONFIG_DIR/.claude.json" ;;
     esac
 
-    local env_flags=(--env "PATH=$BIN_DIR:$PATH" --env "BATON_ROOT=$dir" \
+    local env_flags=(--env "PATH=$BIN_DIR:$PATH" --env "BATON_ROOT=$work_dir" \
       --env "BATON_MARKER_DIR=$marker_dir" --env "BATON_ROLE=$role")
     while IFS= read -r line; do env_flags+=("$line"); done < <(run_env_flags)
     [ "${tools[$idx]}" != "claude2" ] || env_flags+=(--env "CLAUDE_CONFIG_DIR=$CLAUDE2_CONFIG_DIR")
@@ -868,14 +933,14 @@ spawn_pipeline_panes() {
 
     if [ "$idx" = 1 ]; then
       local create_json
-      if [ -n "${HERDR_WORKSPACE_ID:-}" ]; then
+      if [ -n "${HERDR_WORKSPACE_ID:-}" ] && [ "$work_dir" = "$dir" ]; then
         owns_workspace=0
-        create_json="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd "$dir" \
+        create_json="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --cwd "$work_dir" \
           --label "$name" "${env_flags[@]}" --no-focus)"
         workspace_id="$HERDR_WORKSPACE_ID"
       else
         owns_workspace=1
-        create_json="$(herdr workspace create --cwd "$dir" --label "$name" \
+        create_json="$(herdr workspace create --cwd "$work_dir" --label "$name" \
           "${env_flags[@]}" --no-focus)"
         workspace_id="$(herdr_json "$create_json" result.workspace.workspace_id)"
       fi
@@ -885,13 +950,16 @@ spawn_pipeline_panes() {
         echo "baton: herdr didn't return a workspace/tab/pane - got: $create_json" >&2
         exit 1
       }
+      echo "$workspace_id" >"$marker_dir/workspace_id"
+      echo "$tab_id" >"$marker_dir/tab_id"
+      echo "$owns_workspace" >"$marker_dir/owns_workspace"
     else
       local split_base_idx split_dir split_ratio split_json split_args
       read -r split_base_idx split_dir split_ratio <<<"$(layout_split_plan "$layout" "$idx" "${#ROLES[@]}")"
       # Built as one array, expanded once, so it's never empty at expansion
       # time - bash 3.2 (macOS's stock bash) treats "${arr[@]}" on a
       # genuinely empty array as unbound under `set -u`, even when declared.
-      split_args=("${pane_ids[$split_base_idx]}" --direction "$split_dir" --ratio "$split_ratio" --cwd "$dir" "${env_flags[@]}" --no-focus)
+      split_args=("${pane_ids[$split_base_idx]}" --direction "$split_dir" --ratio "$split_ratio" --cwd "$work_dir" "${env_flags[@]}" --no-focus)
       split_json="$(herdr pane split "${split_args[@]}")"
       pane_id="$(herdr_json "$split_json" result.pane.pane_id)"
       [ -n "$pane_id" ] || {
@@ -1043,17 +1111,30 @@ attach_or_launch() {
 }
 
 cmd_start() {
-  local think=0 dir="." yes=0
+  local think=0 dir="." yes=0 requested_base=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
     --think) think=1 ;;
     --yes | -y) yes=1 ;;
+    --base)
+      [ "$#" -ge 2 ] || { echo "baton: --base needs a branch" >&2; exit 1; }
+      requested_base="$2"
+      shift
+      ;;
     -*) echo "baton: unknown start option '$1'" >&2; exit 1 ;;
     *) dir="$1" ;;
     esac
     shift
   done
-  dir="$(cd "$dir" && pwd)"
+  dir="$(main_checkout_root "$(cd "$dir" && pwd)")"
+  git -C "$dir" rev-parse --show-toplevel >/dev/null 2>&1 || {
+    echo "baton: $dir is not a git repository - sessions run in their own git worktree" >&2
+    exit 1
+  }
+  resolve_base "$dir" "$requested_base" || exit 1
+  git -C "$dir" cat-file -e "$BASE_COMMIT:.kata.toml" 2>/dev/null || {
+    echo "baton: warning - .kata.toml isn't committed at $BASE_REF, so the session worktree won't be bound to your kata project; commit it first or the conductor will run 'kata init' inside the worktree" >&2
+  }
 
   if [ "$yes" != 1 ]; then
     configure_roles_interactively "$dir" || { echo "baton: cancelled"; exit 0; }
@@ -1066,31 +1147,47 @@ cmd_start() {
     }
   done
 
-  if git -C "$dir" rev-parse --show-toplevel >/dev/null 2>&1; then
-    local repo_root gitignore
-    repo_root="$(git -C "$dir" rev-parse --show-toplevel)"
-    gitignore="$repo_root/.gitignore"
-    if ! grep -qx '\.baton/' "$gitignore" 2>/dev/null; then
-      # Append on its own line even if the file exists without a trailing newline.
-      [ -s "$gitignore" ] && [ -n "$(tail -c1 "$gitignore")" ] && echo >>"$gitignore"
-      echo '.baton/' >>"$gitignore"
-      echo "baton: added .baton/ to $gitignore"
-    fi
+  if ! git -C "$dir" check-ignore -q .baton/; then
+    local exclude_file
+    exclude_file="$(git -C "$dir" rev-parse --path-format=absolute --git-path info/exclude)"
+    mkdir -p "$(dirname "$exclude_file")"
+    echo '.baton/' >>"$exclude_file"
+    echo "baton: added .baton/ to $exclude_file"
   fi
 
   local instance
   instance="$(uuidgen | tr 'A-Z' 'a-z' | cut -c1-8)"
   local marker_dir="$dir/.baton/s/$instance"
+  local session_branch="baton/$instance"
+  local worktree_path="${BATON_WORKTREE_DIR:-$HOME/.baton-worktrees}/$(basename "$dir")-$instance"
   mkdir -p "$marker_dir/reports"
   if [ "$think" = 1 ]; then
     touch "$marker_dir/think"
   fi
 
+  mkdir -p "$(dirname "$worktree_path")"
+  git -C "$dir" worktree add --quiet -b "$session_branch" "$worktree_path" "$BASE_COMMIT" || {
+    rm -r -- "$marker_dir"
+    echo "baton: could not create the session worktree at $worktree_path" >&2
+    exit 1
+  }
+  worktree_path="$(cd "$worktree_path" && pwd -P)"
+  echo worktree-v1 >"$marker_dir/workflow_version"
+  echo "$session_branch" >"$marker_dir/session_branch"
+  echo "$BASE_TARGET" >"$marker_dir/base_branch"
+  echo "$BASE_REF" >"$marker_dir/base_ref"
+  echo "$BASE_COMMIT" >"$marker_dir/base_commit"
+  echo "$BASE_REMOTE" >"$marker_dir/remote"
+  echo "$worktree_path" >"$marker_dir/worktree"
+
   local name
   name="$(name_for "$dir" "$instance")"
 
   local result workspace_id tab_id
-  result="$(spawn_pipeline_panes "$dir" "$name" "$marker_dir")"
+  result="$(spawn_pipeline_panes "$dir" "$name" "$marker_dir" "$worktree_path")" || {
+    echo "baton: startup failed - the checkout at $worktree_path is kept; 'baton resume $instance $dir' retries, 'baton remove $instance $dir' cleans up" >&2
+    exit 1
+  }
   workspace_id="${result%% *}"
   tab_id="${result##* }"
   echo "$workspace_id" >"$marker_dir/workspace_id"
@@ -1098,6 +1195,7 @@ cmd_start() {
   start_courier "$marker_dir"
 
   echo "baton: started '$name' ($instance) for $dir"
+  echo "  worktree: $worktree_path ($session_branch from $BASE_REF at ${BASE_COMMIT:0:12})"
   echo "  marker dir: $marker_dir"
   echo "  give the conductor pane your goal to kick off a run."
 
@@ -1145,12 +1243,21 @@ cmd_resume() {
     return $?
   fi
 
+  local work_dir=""
+  if [ "$(cat "$marker_dir/workflow_version" 2>/dev/null || true)" = "worktree-v1" ]; then
+    work_dir="$(cat "$marker_dir/worktree" 2>/dev/null || true)"
+    [ -n "$work_dir" ] && [ -d "$work_dir" ] || {
+      echo "baton: the session checkout '$work_dir' is missing - 'baton remove $instance $DIR' discards this session" >&2
+      exit 1
+    }
+  fi
+
   if [ "$yes" != 1 ]; then
     configure_roles_interactively "$DIR" || { echo "baton: cancelled"; exit 0; }
   fi
 
   local result workspace_id tab_id
-  result="$(spawn_pipeline_panes "$DIR" "$name" "$marker_dir")"
+  result="$(spawn_pipeline_panes "$DIR" "$name" "$marker_dir" ${work_dir:+"$work_dir"})"
   workspace_id="${result%% *}"
   tab_id="${result##* }"
   echo "$workspace_id" >"$marker_dir/workspace_id"
@@ -1194,6 +1301,51 @@ cmd_stop() {
   fi
 }
 
+registered_session_worktree() {
+  local repo="$1" marker_dir="$2" worktree_path
+  worktree_path="$(cat "$marker_dir/worktree" 2>/dev/null || true)"
+  [ -n "$worktree_path" ] || { echo "baton: session has no recorded worktree" >&2; return 1; }
+  [ -d "$worktree_path" ] || return 2
+  if [ -L "$worktree_path" ]; then
+    echo "baton: refusing to remove a worktree through a symlink: $worktree_path" >&2
+    return 1
+  fi
+  worktree_path="$(cd "$worktree_path" && pwd -P)"
+  [ "$worktree_path" != "$(cd "$repo" && pwd -P)" ] || {
+    echo "baton: refusing to remove the primary checkout" >&2
+    return 1
+  }
+  git -C "$repo" worktree list --porcelain | grep -qxF "worktree $worktree_path" || {
+    echo "baton: $worktree_path is not a registered worktree of $repo" >&2
+    return 1
+  }
+  echo "$worktree_path"
+}
+
+check_session_worktree_removable() {
+  local repo="$1" marker_dir="$2" worktree_path status=0
+  worktree_path="$(registered_session_worktree "$repo" "$marker_dir")" || status=$?
+  [ "$status" = 2 ] && return 0
+  [ "$status" = 0 ] || return 1
+  if [ -n "$(git -C "$worktree_path" status --porcelain 2>/dev/null)" ]; then
+    echo "baton: $worktree_path has uncommitted changes - commit or discard them before removing this session" >&2
+    return 1
+  fi
+}
+
+remove_session_worktree() {
+  local repo="$1" marker_dir="$2" worktree_path status=0
+  worktree_path="$(registered_session_worktree "$repo" "$marker_dir")" || status=$?
+  if [ "$status" = 2 ]; then
+    git -C "$repo" worktree prune
+  elif [ "$status" = 0 ]; then
+    git -C "$repo" worktree remove -- "$worktree_path" || return 1
+  else
+    return 1
+  fi
+  echo "baton: kept branch $(cat "$marker_dir/session_branch" 2>/dev/null) (delete it with 'git branch -D' when no longer needed)"
+}
+
 cmd_remove() {
   parse_ref_dir_args "$@"
   local instance
@@ -1213,6 +1365,10 @@ cmd_remove() {
     exit 1
   fi
 
+  if [ "$(cat "$marker_dir/workflow_version" 2>/dev/null || true)" = "worktree-v1" ]; then
+    check_session_worktree_removable "$DIR" "$marker_dir" || exit 1
+  fi
+
   local tab_id workspace_id owns tab_json
   tab_id="$(cat "$marker_dir/tab_id" 2>/dev/null || true)"
   workspace_id="$(cat "$marker_dir/workspace_id" 2>/dev/null || true)"
@@ -1228,6 +1384,10 @@ cmd_remove() {
       echo "baton: could not check whether instance '$instance' is running: $tab_json" >&2
       exit 1
     fi
+  fi
+
+  if [ "$(cat "$marker_dir/workflow_version" 2>/dev/null || true)" = "worktree-v1" ]; then
+    remove_session_worktree "$DIR" "$marker_dir" || exit 1
   fi
 
   rm -r -- "$marker_dir"
@@ -1312,7 +1472,7 @@ for item in issues:
 
 cmd_status() {
   local dir="${1:-.}"
-  dir="$(cd "$dir" && pwd)"
+  dir="$(main_checkout_root "$(cd "$dir" && pwd)")"
 
   local base="$dir/.baton/s"
   local d uuid slug tab_id agents_file role agent_name status_json status state found=0
@@ -1332,6 +1492,11 @@ cmd_status() {
       fi
 
       printf '%s  %s  %s\n' "$(paint 1 "$uuid")" "$(paint "$(instance_state_sgr "$state")" "$state")" "$slug"
+      if [ -f "$d/workflow_version" ]; then
+        printf '  workflow %s  branch %s  base %s@%s\n  worktree %s\n' "$(cat "$d/workflow_version")" \
+          "$(cat "$d/session_branch" 2>/dev/null)" "$(cat "$d/base_ref" 2>/dev/null)" \
+          "$(cut -c1-12 "$d/base_commit" 2>/dev/null)" "$(cat "$d/worktree" 2>/dev/null)"
+      fi
 
       agents_file="$d/agents.map"
       if [ "$state" = "running" ] && [ -f "$agents_file" ]; then

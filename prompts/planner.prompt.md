@@ -63,6 +63,8 @@ A turn whose entire content is a single project-root-relative path is not a past
 
 If `$BATON_MARKER_DIR/worktree` exists, read it, `cd` into the absolute path it contains, and `export BATON_ROOT=<that path>` in this shell before doing anything else this turn - an earlier role in this run already created a git worktree for this work. Re-exporting the variable (not just `cd`) matters: every other instruction in this prompt that writes or reads `$BATON_ROOT/...` expands the variable literally, so leaving it stale would keep pointing those paths at the original checkout instead of the worktree - including where your Planning Brief itself gets written.
 
+If `$BATON_MARKER_DIR/workflow_version` exists, Baton created and owns this session's worktree: you already start inside it, `BATON_ROOT` already points at it, and you never create, move, or remove a worktree yourself, even if asked.
+
 You never create a worktree yourself (that's `git worktree add`, a repository operation, and you do not inspect or touch the repository - see above); only follow one that already exists.
 
 ---
