@@ -50,7 +50,7 @@ for you to review it, and only starts dispatching once you tell it to continue.
 | **researcher** | Investigates how the current implementation works. |
 | **planner** | Writes a Planning Brief. |
 | **principal** | Produces an implementation design. |
-| **implementer** | Implements the approved design. The only role that commits code, creates branches, and publishes pull requests (one per session under `feature-v1`). |
+| **implementer** | Implements the approved design. The only role that commits code, creates branches, and publishes pull requests (one per session under `feature`). |
 | **reviewer** | Reviews the implementation and returns PASS or CHANGES REQUIRED. |
 
 Each persona lives in `prompts/<role>.prompt.md`. Simple items can skip ahead
@@ -66,7 +66,7 @@ Each persona lives in `prompts/<role>.prompt.md`. Simple items can skip ahead
   before its first `baton start`; the conductor also does this itself if it
   hasn't been done.
 - [`gh`](https://cli.github.com/), authenticated (`gh auth login`) - only for the
-  default `feature-v1` workflow, which publishes one pull request to a GitHub
+  default `feature` workflow, which publishes one pull request to a GitHub
   remote (see [One PR per feature](#one-pr-per-feature))
 - `uuidgen` (ships with macOS and most Linux distros)
 - `bash` 3.2+ (the scripts avoid associative arrays for macOS's stock bash)
@@ -144,7 +144,7 @@ update, `baton stop` it and `baton resume` it.
 ## Usage
 
 ```
-baton start [--base BRANCH] [--workflow feature-v1|worktree-v1] [--think] [--yes] [DIR]
+baton start [--base BRANCH] [--workflow feature|worktree] [--think] [--yes] [DIR]
                                      Start a new instance for DIR (default: cwd) in its own git worktree
 baton status [DIR]                   List every instance for DIR, running or stopped
 baton attach [REF] [DIR]             Switch into a running instance (REF: slug or uuid)
@@ -186,22 +186,22 @@ The session branch starts from `--base`:
 
 The base, its commit, and its remote are recorded in the marker dir
 (`base_branch`, `base_ref`, `base_commit`, `remote`), along with
-`workflow_version`, which says how the session turns backlog items into
+`workflow`, which says how the session turns backlog items into
 branches and pull requests. It is fixed when the session starts, and `update`
 and `resume` never change it.
 
-| `workflow_version` | Chosen when | What a session produces |
+| `workflow` | Chosen when | What a session produces |
 |---|---|---|
-| `feature-v1` | the base is on a GitHub remote (the default there) | one session branch with the reviewed commits of every backlog item, and **one draft PR** for the whole goal ([details](#one-pr-per-feature)) |
-| `worktree-v1` | the base has no remote, or you pass `--workflow worktree-v1` | one branch per backlog item, cut from trunk (or from an unmerged item it depends on), each with its own PR into trunk when the repository has a remote and `gh` is available |
+| `feature` | the base is on a GitHub remote (the default there) | one session branch with the reviewed commits of every backlog item, and **one draft PR** for the whole goal ([details](#one-pr-per-feature)) |
+| `worktree` | the base has no remote, or you pass `--workflow worktree` | one branch per backlog item, cut from trunk (or from an unmerged item it depends on), each with its own PR into trunk when the repository has a remote and `gh` is available |
 
-Pass `--workflow` to override the default, for example `--workflow worktree-v1`
+Pass `--workflow` to override the default, for example `--workflow worktree`
 for a GitLab remote. Instances created by an older baton release have no
-`workflow_version`; they run in `DIR` itself instead of a worktree.
+`workflow`; they run in `DIR` itself instead of a worktree.
 
 ### One PR per feature
 
-A `feature-v1` session turns the whole goal into **one draft pull request**
+A `feature` session turns the whole goal into **one draft pull request**
 into the base branch. The conductor's backlog items are review steps, not PRs:
 implementer commits each item directly on the session branch, reviewer checks
 that exact commit, and only a PASS lets the next item start. Baton never merges
@@ -209,7 +209,7 @@ the PR. If a feature is too big for one PR, split the goal into smaller
 sessions.
 
 `baton start` needs `gh` installed and authenticated and a GitHub remote, and
-stops before creating anything otherwise (`--workflow worktree-v1` skips this).
+stops before creating anything otherwise (`--workflow worktree` skips this).
 Per item, roles run `baton-item`:
 
 - `start` records the commit the item starts from and refuses unless the
@@ -362,7 +362,7 @@ BATON_MAX_IN_FLIGHT=2 baton start .
   only gets that item's handoffs (fixes after CHANGES REQUIRED, answers to its
   questions) until reviewer passes it. All panes share one checkout, so the
   next item's build waits for this one to be done: its branch under
-  `worktree-v1`, its reviewed commit on the session branch under `feature-v1`.
+  `worktree`, its reviewed commit on the session branch under `feature`.
 - Stale designs: implementer re-checks each design against the code before
   building, and bounces it to principal if it no longer fits.
 - Context: a pane is sent `/clear` whenever it switches to a different item
@@ -372,8 +372,8 @@ BATON_MAX_IN_FLIGHT=2 baton start .
   `.baton/s/<instance>/staging/<item>/` (gitignored, at the same relative
   paths they'd have in the repo) instead of the checkout, which may be on
   another item's branch. Implementer moves them into the repo and commits them
-  with the code: on the item's own branch under `worktree-v1`, on the session
-  branch under `feature-v1`.
+  with the code: on the item's own branch under `worktree`, on the session
+  branch under `feature`.
 - An item labeled `checkpoint` runs alone, so the run can pause after it.
 
 **Known limits:**
@@ -556,7 +556,7 @@ on a laptop, six equal panes are each too small to read comfortably. Two fixes:
   herdr reports its turn over. A pane switching to a different backlog item is
   sent `/clear` first. This is what lets several items be in flight at once:
   work for a busy role waits in its queue instead of interrupting it.
-- **`bin/baton-item`** records and checks a `feature-v1` session's evidence:
+- **`bin/baton-item`** records and checks a `feature` session's evidence:
   each item's start, completed and reviewed commits, the one draft PR
   (`publish`), and finalization (`final-start`, `final-review`, `ready`). It
   runs inside the role's own shell, like `baton-handoff`, and
@@ -611,7 +611,7 @@ The scripts in `tests/` are plain bash with no framework; run one with
 `bash tests/<name>.sh` (`claude2`, `courier`, `dispatch`, `env`, `handoff`,
 `nudge`, `remove`, `status`, `update`, `worktree`, `feature`). `worktree` covers
 base resolution and the session worktree lifecycle against stubbed herdr and
-kata. `feature` covers the `feature-v1` item gate, publication, finalization,
+kata. `feature` covers the `feature` item gate, publication, finalization,
 resume and remove against a local bare repository, with `gh` stubbed. Neither
 launches real agents or touches GitHub; `tests/spike/` holds the manual
 sandbox and handoff probes for real panes.

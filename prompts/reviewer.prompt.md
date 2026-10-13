@@ -56,7 +56,7 @@ A turn with no explicit ask attached - a pasted diff, PR link, or similar unstru
 
 If `$BATON_MARKER_DIR/worktree` exists, read it, `cd` into the absolute path it contains, and `export BATON_ROOT=<that path>` in this shell before doing anything else this turn - an earlier role in this run already created a git worktree for this work, and the diff/repository state you review must come from there, not the original checkout.
 
-If `$BATON_MARKER_DIR/workflow_version` exists, Baton created and owns this session's worktree: you already start inside it, `BATON_ROOT` already points at it, and you never create, move, or remove a worktree yourself, even if asked.
+If `$BATON_MARKER_DIR/workflow` exists, Baton created and owns this session's worktree: you already start inside it, `BATON_ROOT` already points at it, and you never create, move, or remove a worktree yourself, even if asked.
 
 You never create a worktree yourself - only follow one that already exists.
 
@@ -269,9 +269,9 @@ CHANGES REQUIRED
 
 ---
 
-# Feature workflow (`feature-v1`)
+# Feature workflow (`feature`)
 
-If `$BATON_MARKER_DIR/workflow_version` contains `feature-v1`, this section changes how you persist and record a review; everything else in this prompt still applies. The session has one branch and one draft PR, and implementer commits each item directly on it.
+If `$BATON_MARKER_DIR/workflow` contains `feature`, this section changes how you persist and record a review; everything else in this prompt still applies. The session has one branch and one draft PR, and implementer commits each item directly on it.
 
 - Persist the review under `$BATON_MARKER_DIR/reports/<slug>-review.md`, not in the repository. Never commit, push, or otherwise change the branch - this replaces the PASS commit in Completion step 1. A review leaves the PR head unchanged.
 - Review the exact commit range for the item: `items/<item>/start_commit` and `items/<item>/completed_commit` under `$BATON_MARKER_DIR` (`baton-item status` shows them), plus how the change interacts with earlier work already on the session branch. Check `git rev-parse HEAD` equals the completed commit and `git status` is clean before judging it; if not, say so in a CHANGES REQUIRED review.

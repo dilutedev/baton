@@ -135,7 +135,7 @@ if [ -f "$conductor_run" ] && command -v kata >/dev/null 2>&1; then
   [ -n "$item_ref" ] || item_ref="$(sed -n '2p' "$conductor_run")"
   if [ -n "$item_ref" ]; then
     if [ "$BATON_ROLE" = "reviewer" ] && [ "$status" = "done" ] &&
-      [ "$(cat "$BATON_MARKER_DIR/workflow_version" 2>/dev/null || true)" = "feature-v1" ]; then
+      [ "$(cat "$BATON_MARKER_DIR/workflow" 2>/dev/null || true)" = "feature" ]; then
       "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/baton-item" gate "$item_ref" || {
         echo "baton-handoff: PASS refused - record the review with 'baton-item review' for the current commit, with a clean checkout, then hand off again" >&2
         exit 3

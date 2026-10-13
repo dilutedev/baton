@@ -125,10 +125,10 @@ git -C "$local_repo" config user.name test
 printf 'x\n' >"$local_repo/f"
 git -C "$local_repo" add f
 git -C "$local_repo" commit -q -m init
-refuses "$baton" start --yes --workflow feature-v1 --base main "$local_repo"
+refuses "$baton" start --yes --workflow feature --base main "$local_repo"
 grep -q "has none" "$output"
 "$baton" start --yes --base main "$local_repo" >/dev/null 2>&1
-[ "$(cat "$local_repo"/.baton/s/*/workflow_version)" = worktree-v1 ]
+[ "$(cat "$local_repo"/.baton/s/*/workflow)" = worktree ]
 
 "$baton" start --yes "$project" >/dev/null 2>&1
 session_dirs=("$project"/.baton/s/*/)
@@ -136,7 +136,7 @@ marker="${session_dirs[0]%/}"
 session_id="$(basename "$marker")"
 worktree="$(cat "$marker/worktree")"
 session_branch="baton/$session_id"
-[ "$(cat "$marker/workflow_version")" = feature-v1 ]
+[ "$(cat "$marker/workflow")" = feature ]
 [ "$(cat "$marker/pr_repo")" = acme/widgets ]
 [ "$(cat "$marker/remote")" = origin ]
 base_commit="$(cat "$marker/base_commit")"

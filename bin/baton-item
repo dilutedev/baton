@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # baton-item <command> ...
 # Records and checks the commit, review and publication evidence of a
-# feature-v1 session: every backlog item is committed on the session branch,
+# feature session: every backlog item is committed on the session branch,
 # reviewed at an exact commit, and published to one draft pull request.
 #
 #   start <item>                          record the commit the item starts from
@@ -23,7 +23,7 @@ fail() {
 
 [ -n "${BATON_MARKER_DIR:-}" ] || fail "BATON_MARKER_DIR is not set"
 marker_dir="$BATON_MARKER_DIR"
-[ "$(cat "$marker_dir/workflow_version" 2>/dev/null || true)" = feature-v1 ] || fail "this session does not use the feature-v1 workflow"
+[ "$(cat "$marker_dir/workflow" 2>/dev/null || true)" = feature ] || fail "this session does not use the feature workflow"
 
 read_marker() { cat "$marker_dir/$1" 2>/dev/null || true; }
 

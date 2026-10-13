@@ -101,7 +101,7 @@ first_session="$(only_session "$local_repo")"
 first_marker="$local_repo/.baton/s/$first_session"
 first_worktree="$(cat "$first_marker/worktree")"
 
-[ "$(cat "$first_marker/workflow_version")" = worktree-v1 ]
+[ "$(cat "$first_marker/workflow")" = worktree ]
 [ "$(cat "$first_marker/session_branch")" = "baton/$first_session" ]
 [ "$(cat "$first_marker/base_branch")" = main ]
 [ "$(cat "$first_marker/base_commit")" = "$main_head" ]
@@ -140,7 +140,7 @@ second_marker="${second_marker%/}"
 [ "$(grep -c "tab create" "$HERDR_LOG" || true)" = 0 ]
 
 (cd "$first_worktree" && "$baton" status) >"$test_root/status-output"
-grep -q "worktree-v1" "$test_root/status-output"
+grep -q "worktree" "$test_root/status-output"
 grep -q "$first_worktree" "$test_root/status-output"
 grep -q "baton/$first_session" "$test_root/status-output"
 grep -q "$(basename "$second_marker")" "$test_root/status-output"
@@ -210,7 +210,7 @@ git -C "$upstream" push -q origin main
 remote_tip="$(git -C "$upstream" rev-parse main)"
 [ "$(git -C "$test_root/clone" rev-parse refs/remotes/origin/main)" != "$remote_tip" ]
 
-"$baton" start --yes --workflow worktree-v1 "$test_root/clone" >/dev/null
+"$baton" start --yes --workflow worktree "$test_root/clone" >/dev/null
 clone_marker="$test_root/clone/.baton/s/$(only_session "$test_root/clone")"
 [ "$(cat "$clone_marker/remote")" = origin ]
 [ "$(cat "$clone_marker/base_branch")" = main ]
@@ -218,7 +218,7 @@ clone_marker="$test_root/clone/.baton/s/$(only_session "$test_root/clone")"
 [ "$(cat "$clone_marker/base_commit")" = "$remote_tip" ]
 [ "$(git -C "$(cat "$clone_marker/worktree")" rev-parse HEAD)" = "$remote_tip" ]
 
-"$baton" start --yes --workflow worktree-v1 --base origin/develop "$test_root/clone" >/dev/null
+"$baton" start --yes --workflow worktree --base origin/develop "$test_root/clone" >/dev/null
 develop_marker="$(ls -dt "$test_root"/clone/.baton/s/*/ | head -n1)"
 [ "$(cat "${develop_marker}remote")" = origin ]
 [ "$(cat "${develop_marker}base_branch")" = develop ]
@@ -246,9 +246,15 @@ fi
 failed_marker="$failing_repo/.baton/s/$(only_session "$failing_repo")"
 failed_worktree="$(cat "$failed_marker/worktree")"
 [ -d "$failed_worktree" ]
-[ "$(cat "$failed_marker/workflow_version")" = worktree-v1 ]
+[ "$(cat "$failed_marker/workflow")" = worktree ]
 grep -q "resume" "$test_root/failed-start-output"
 "$baton" remove "$(basename "$failed_marker")" "$failing_repo" >/dev/null
 [ ! -e "$failed_worktree" ]
+
+legacy_marker="$failing_repo/.baton/s/deadbeef"
+mkdir -p "$legacy_marker"
+printf 'worktree-v1\n' >"$legacy_marker/workflow_version"
+"$baton" status "$failing_repo" >/dev/null
+[ "$(cat "$legacy_marker/workflow")" = worktree ]
 
 printf 'worktree checks passed\n'

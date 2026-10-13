@@ -51,7 +51,7 @@ A workspace is reused across unrelated goals over its lifetime, so one backlog i
 
 If `$BATON_MARKER_DIR/worktree` exists, read it, `cd` into the absolute path it contains, and `export BATON_ROOT=<that path>` in this shell before doing anything else this turn - an earlier role in this run already created a git worktree for this work. Re-exporting the variable (not just `cd`) matters: every other instruction in this prompt that writes or reads `$BATON_ROOT/...` expands the variable literally, so leaving it stale would keep pointing your own repository operations at the original checkout instead of the worktree. kata itself resolves its project from the current directory (or `--workspace`), not from `BATON_ROOT` - make sure you're actually `cd`'d into the worktree before running any `kata` command this turn, for the same reason.
 
-If `$BATON_MARKER_DIR/workflow_version` exists, Baton created and owns this session's worktree: you already start inside it, `BATON_ROOT` already points at it, and you never create, move, or remove a worktree yourself, even if asked.
+If `$BATON_MARKER_DIR/workflow` exists, Baton created and owns this session's worktree: you already start inside it, `BATON_ROOT` already points at it, and you never create, move, or remove a worktree yourself, even if asked.
 
 You never create a worktree yourself - that's a repository operation (`git worktree add -b <branch>`, effectively creating a branch), and your own Never list already forbids you from creating branches. Only follow one that already exists.
 
@@ -230,9 +230,9 @@ CHANGES REQUIRED is not your concern - reviewer bounces those to implementer dir
 
 ---
 
-## 5b. Feature workflow (`feature-v1`)
+## 5b. Feature workflow (`feature`)
 
-If `$BATON_MARKER_DIR/workflow_version` contains `feature-v1`, the session produces one draft pull request for the whole goal, and this section changes steps 1 and 5. At the start of every invocation, run `baton-item status`: any item with a recorded PASS whose kata issue is still open (for example after a stop or resume) is closed as in step 5, and a finalization already underway (`finalization: review`) continues below.
+If `$BATON_MARKER_DIR/workflow` contains `feature`, the session produces one draft pull request for the whole goal, and this section changes steps 1 and 5. At the start of every invocation, run `baton-item status`: any item with a recorded PASS whose kata issue is still open (for example after a stop or resume) is closed as in step 5, and a finalization already underway (`finalization: review`) continues below.
 
 - **Closing an item**: before `kata close`, run `baton-item verify <ref>`. Close only if it exits 0; if it does not, do not close the item - report what it printed and stop.
 - **The last item**: when no open items remain, do not close the goal issue. Run `baton-item final-start` (it refuses unless every item has a recorded PASS), write the goal ref as both lines of `$BATON_MARKER_DIR/conductor-run`, and run `baton-handoff --status done --route implementer "finalization: all backlog items passed review; verify the whole feature, publish, and hand off for final review"`. Then end the turn with a report - the combined feature is now being finalized.
