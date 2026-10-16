@@ -1118,7 +1118,11 @@ nudge_conductor() {
       message="$message Its goal issue is $goal_ref."
       [ -n "$item_ref" ] && message="$message The item last in flight was $item_ref - check its state in kata before deciding what to do next."
     fi
-    message="$message Continue dispatching from wherever it left off."
+    if [ -f "$marker_dir/proposal" ]; then
+      message="$message This session is still in its proposal phase - nothing has been approved for building. Pick it up as your prompt's Proposal phase section describes."
+    else
+      message="$message Continue dispatching from wherever it left off."
+    fi
   else
     message="Resuming this session - no new goal from me, and no backlog has been created for this session yet. Do not look through kata for other open issues or goals to pick up; wait for a goal."
   fi
