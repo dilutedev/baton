@@ -140,10 +140,20 @@ deliver_next() {
   fi
 }
 
+# show_notification <text> -> a desktop notification, where the platform
+# has a way to show one; otherwise nothing. Never fails the tick.
+show_notification() {
+  if command -v osascript >/dev/null 2>&1; then
+    osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "baton"' -e 'end run' "$1" >/dev/null 2>&1 || true
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send baton "$1" >/dev/null 2>&1 || true
+  fi
+}
+
 tick() {
   [ -f "$agents_file" ] || return 0
   take_lock
-  local role agent line
+  local role agent line notes=""
   while IFS=$'\t' read -r role agent <&3; do
     [ -n "$role" ] && [ -s "$state_dir/$role.queue" ] || continue
     ! role_busy "$role" || continue
@@ -153,7 +163,15 @@ tick() {
     idle | done) deliver_next "$role" "$agent" "$line" ;;
     esac
   done 3<"$agents_file"
+  # bin/baton-notify's queue, taken whole and shown with the lock released.
+  if [ -s "$state_dir/notify.queue" ]; then
+    notes="$(cat "$state_dir/notify.queue")"
+    : >"$state_dir/notify.queue"
+  fi
   drop_lock
+  [ -z "$notes" ] || while IFS= read -r line; do
+    show_notification "$line"
+  done <<<"$notes"
 }
 
 if [ -n "$once" ]; then

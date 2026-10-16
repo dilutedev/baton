@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# baton-notify "<text>"
+# Queues a desktop notification for the user - the conductor runs it
+# whenever it stops and needs them. Like baton-handoff, it only writes to
+# .dispatch-state/: it runs inside the calling agent's sandbox (codex's
+# can't reach the desktop), so bin/baton-courier shows it from outside.
+set -euo pipefail
+
+text="$*"
+[ -n "$text" ] || {
+  echo "baton-notify: usage: baton-notify <text>" >&2
+  exit 1
+}
+[ -n "${BATON_MARKER_DIR:-}" ] || {
+  echo "baton-notify: BATON_MARKER_DIR is not set" >&2
+  exit 1
+}
+
+state_dir="$BATON_MARKER_DIR/.dispatch-state"
+
+# Same lock as bin/baton-handoff's and bin/baton-courier's (kept in sync
+# manually).
+lock_dir="$state_dir/.lock"
+mkdir -p "$state_dir"
+until mkdir "$lock_dir" 2>/dev/null; do sleep 0.1; done
+trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
+
+printf '%s\n' "$(echo "$text" | tr '\n\t' '  ' | sed -E 's/[[:space:]]+$//')" >>"$state_dir/notify.queue"

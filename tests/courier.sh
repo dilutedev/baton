@@ -174,4 +174,16 @@ tick
 implementer-agent design b2" ]
 [ "$(cat "$state_dir/build.item")" = b2 ]
 
+# baton-notify queues from inside a pane; the courier shows each line once.
+printf '#!/bin/sh\nfor a; do last="$a"; done\nprintf "%%s\\n" "$last" >>"%s/shown"\n' "$test_root" >"$test_root/bin/osascript"
+chmod +x "$test_root/bin/osascript"
+BATON_MARKER_DIR="$marker_dir" bash "$repository_dir/bin/baton-notify" "Proposal ready: \"fix checkout\""
+BATON_MARKER_DIR="$marker_dir" bash "$repository_dir/bin/baton-notify" "second"
+tick
+[ "$(cat "$test_root/shown")" = 'Proposal ready: "fix checkout"
+second' ]
+[ ! -s "$state_dir/notify.queue" ]
+tick
+[ "$(wc -l <"$test_root/shown")" -eq 2 ]
+
 printf 'courier checks passed\n'
