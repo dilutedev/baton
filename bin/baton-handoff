@@ -134,7 +134,26 @@ if [ -f "$conductor_run" ] && command -v kata >/dev/null 2>&1; then
   fi
   [ -n "$item_ref" ] || item_ref="$(sed -n '2p' "$conductor_run")"
   if [ -n "$item_ref" ]; then
-    if [ "$BATON_ROLE" = "reviewer" ] && [ "$status" = "done" ] &&
+    # Proposal phase (docs/plans/solution-proposals.md): the item is the goal
+    # issue itself, named in $BATON_MARKER_DIR/proposal. It builds nothing,
+    # and each round (started by a conductor handoff) gets one critique.
+    # Finalization also works on the goal ref, so a leftover proposal file
+    # never applies once it has started.
+    proposal=""
+    [ "$item_ref" != "$(cat "$BATON_MARKER_DIR/proposal" 2>/dev/null || true)" ] ||
+      [ -f "$BATON_MARKER_DIR/final/phase" ] || proposal=1
+    critiqued="$state_dir/proposal.$item_ref.critiqued"
+    if [ -n "$proposal" ]; then
+      [ "$target" != "implementer" ] || {
+        echo "baton-handoff: refused - the proposal phase builds nothing; principal routes its proposal to reviewer and its critique response to conductor" >&2
+        exit 3
+      }
+      [ "$target" != "reviewer" ] || [ ! -e "$critiqued" ] || {
+        echo "baton-handoff: refused - this proposal already had its critique this round; route it to conductor" >&2
+        exit 3
+      }
+    fi
+    if [ -z "$proposal" ] && [ "$BATON_ROLE" = "reviewer" ] && [ "$status" = "done" ] &&
       [ "$(cat "$BATON_MARKER_DIR/workflow" 2>/dev/null || true)" = "feature" ]; then
       "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/baton-item" gate "$item_ref" || {
         echo "baton-handoff: PASS refused - record the review with 'baton-item review' for the current commit, with a clean checkout, then hand off again" >&2
@@ -149,6 +168,12 @@ $body_tail" \
     take_lock
     date +%s >"$state_dir/$BATON_ROLE.$item_ref.last_handoff"
     rm -f "$state_dir/$BATON_ROLE.$item_ref.stop_nudges" "$state_dir/$BATON_ROLE.$item_ref.armed"
+    if [ -n "$proposal" ]; then
+      case "$BATON_ROLE" in
+      reviewer) touch "$critiqued" ;;
+      conductor) rm -f "$critiqued" ;;
+      esac
+    fi
     # A reviewer PASS ends this item's build - the courier holds every other
     # item back from implementer until then (see bin/baton-courier).
     if [ "$BATON_ROLE" = "reviewer" ] && [ "$status" = "done" ] &&
