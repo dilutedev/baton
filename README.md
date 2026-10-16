@@ -12,10 +12,17 @@ finishes a turn, `bin/baton-handoff` queues the next role's input and
 one-line goal to a backlog of shipped, reviewed changes largely unattended.
 
 ```
-you ──goal──▶ conductor ──▶ researcher ──▶ planner ──▶ principal ──▶ implementer ──▶ reviewer
-                  ▲                                                                     │
-                  └──────────────────────── PASS: next backlog item ────────────────────┘
+you ──goal──▶ conductor ──▶ researcher ──▶ planner ──▶ principal ⇄ reviewer ──▶ conductor ──▶ you
+                                                          proposal   critique               approve
+
+conductor ──▶ researcher ──▶ planner ──▶ principal ──▶ implementer ──▶ reviewer
+    ▲                                                                     │
+    └──────────────────────── PASS: next backlog item ────────────────────┘
 ```
+
+Every run starts with a [proposal phase](#the-proposal-phase): the roles work
+out what to build and the conductor brings you a recommendation and a proposed
+backlog. Nothing is built until you approve it.
 
 Inspired by [ayorcodes/claudespace](https://github.com/ayorcodes/claudespace).
 
@@ -39,17 +46,20 @@ kata init                    # once per project
 baton start                  # pick tool/model/effort per role, then launch
 ```
 
-Give the conductor pane your goal. It decomposes the goal into a backlog, stops
-for you to review it, and only starts dispatching once you tell it to continue.
+Give the conductor pane your goal, or describe an issue. The pipeline
+investigates it and comes back with a solution proposal (you get a desktop
+notification). Reply in the conductor pane to approve it, or to ask for changes.
+Once you approve, the conductor turns the proposal's backlog into kata items and
+works through them.
 
 ## The roles
 
 | Role | Job |
 |---|---|
-| **conductor** | Turns a goal into a backlog, keeps several items in flight (see [Several items in flight](#several-items-in-flight)), closes items on a reviewer PASS. The only role that touches the backlog. |
-| **researcher** | Investigates how the current implementation works. |
+| **conductor** | Starts the proposal phase, brings you the proposal, turns the approved one into a backlog, keeps several items in flight (see [Several items in flight](#several-items-in-flight)), closes items on a reviewer PASS. The only role that touches the backlog. |
+| **researcher** | Investigates how the current implementation works (for a reported problem, its root cause). |
 | **planner** | Writes a Planning Brief. |
-| **principal** | Produces an implementation design. |
+| **principal** | Writes the solution proposal, then an implementation design per item. |
 | **implementer** | Implements the approved design. The only role that commits code, creates branches, and publishes pull requests (one per session under `feature`). |
 | **reviewer** | Reviews the implementation and returns PASS or CHANGES REQUIRED. |
 
@@ -164,6 +174,32 @@ workspace and marker dir under `DIR/.baton/s/<uuid>/`. `baton start` adds
 `.baton/` to the repository's local `.git/info/exclude`, so your tracked files
 stay untouched: it's per-project runtime state (hand-off markers, dispatch
 bookkeeping), not something to commit.
+
+### The proposal phase
+
+A goal never goes straight into a backlog. First:
+
+1. The conductor creates the goal's kata issue and hands the goal to the researcher.
+2. The researcher investigates. For a reported problem, its Technical Brief has
+   to establish the root cause.
+3. The planner writes a Planning Brief, if there are product questions.
+4. The principal writes a **Solution Proposal**: two or three options with
+   their tradeoffs, a recommendation, a proposed backlog, and the decisions
+   you should confirm.
+5. The reviewer critiques the proposal once, and the principal answers each
+   point.
+6. The conductor reports the proposal in its pane, sends a desktop
+   notification, and waits.
+
+Reply in the conductor pane. Ask a question, ask for a revision (which goes
+back to the principal and gets a fresh critique), or approve. On approval the
+conductor creates the backlog items from the proposal and starts dispatching;
+there is no separate backlog review.
+
+While the goal is in this phase, `baton-handoff` refuses any handoff to the
+implementer and a second critique in the same round. The proposal and briefs
+stay under the session's marker dir (`.baton/s/<uuid>/proposal-docs/`), shared
+by every item and never committed, so `baton remove` deletes them.
 
 ### Session worktrees
 
@@ -484,7 +520,7 @@ naming the role if a `glm-*` role is configured and it isn't.
 
 ## Backlog tracking
 
-The conductor decomposes a goal into a backlog, but the backlog lives in
+The conductor creates the backlog from the approved proposal, but it lives in
 [kata](https://github.com/kenn-io/kata), not a markdown file.
 
 - Each goal is one kata issue labeled `baton-backlog`.
@@ -562,6 +598,10 @@ on a laptop, six equal panes are each too small to read comfortably. Two fixes:
   runs inside the role's own shell, like `baton-handoff`, and
   `baton-handoff` calls its `gate` to refuse a reviewer PASS without matching
   evidence. See [One PR per feature](#one-pr-per-feature).
+- **`bin/baton-notify "<text>"`** queues a desktop notification. The
+  conductor runs it whenever it stops and needs you. Like `baton-handoff` it
+  only writes to `.dispatch-state/`, and the courier shows it (`osascript` on
+  macOS, `notify-send` where available, otherwise nothing).
 - **`bin/baton-msg <role> "<text>"`** is fire-and-forget: it types text into
   another role's pane (for example the conductor poking a stuck implementer). It
   never waits for a reply and never advances the pipeline.
