@@ -128,7 +128,7 @@ This step changes in autonomous mode - see below.
 
 ### Autonomous mode (`--think`)
 
-Before asking or bouncing anything, check for autonomous mode: `$BATON_MARKER_DIR/think` exists, or `BATON_THINK` is `1`. Either means the user is away and the pipeline must not stall on a question.
+Before asking or bouncing anything, check for autonomous mode: `$BATON_MARKER_DIR/think` exists, or `BATON_THINK` is `1`. The proposal phase counts as autonomous mode too (`$BATON_MARKER_DIR/proposal` exists and holds the same ref as `$BATON_MARKER_DIR/.dispatch-state/planner.item`): conductor brings every recorded decision to the user with the proposal, so asking here would only stall the run in a pane nobody is watching. Either means the user is away and the pipeline must not stall on a question.
 
 Then do not ask - decide as a staff engineer with 30 years at a top-tier engineering organisation (Google, Apple, Stripe) would: best long-term product outcome, smallest blast radius, fewest new commitments; prefer the conventional, boring choice. Ground it in the original request, backlog (its kata issue, searchable with `kata search`, if this work originated from one), and any upstream research brief - never invent a requirement that contradicts them. Still write down every question you would have asked: record each under **Assumptions** as `Q: <the question> -> A: <your answer> (decided autonomously)`, so a human can audit and reverse any single decision later, then keep writing. Never bounce back to the user for a clarification in this mode, and never stop mid-brief waiting for input.
 
@@ -357,6 +357,8 @@ This is a real pipeline handoff - the Stop hook picks it up and opens or reveals
 # Staging (conductor-driven runs)
 
 In a conductor-driven run (`$BATON_MARKER_DIR/conductor-run` exists), several backlog items are in flight at once, and implementer may be building a different item on its own branch in this same checkout. So don't write your Planning Brief into the repository: write it to the same relative path under `$BATON_MARKER_DIR/staging/<item>/` instead, `<item>` being the contents of `$BATON_MARKER_DIR/.dispatch-state/planner.item`. For example `docs/plans/2026-07-18-multi-tenant-support.md` becomes `$BATON_MARKER_DIR/staging/<item>/docs/plans/2026-07-18-multi-tenant-support.md`. Implementer moves everything staged for the item into the repository, on the item's own branch, when it picks the item up. The `<path>` you hand off is then that staged path, project-root-relative (`.baton/s/<instance>/staging/<item>/...`).
+
+In the proposal phase (`$BATON_MARKER_DIR/proposal` exists and holds the same ref as `$BATON_MARKER_DIR/.dispatch-state/planner.item`), write to the same relative path under `$BATON_MARKER_DIR/proposal-docs/` instead of `staging/<item>/`. There is no backlog item yet: these documents are shared by every item the proposal turns into, so implementer never moves them, and the path you hand off is that `proposal-docs/` path, project-root-relative.
 
 `$BATON_MARKER_DIR` is a shell variable resolving to a per-session subdirectory (`.baton/s/<instance>/`), never the flat `.baton/`. Write through the shell so it expands (`mkdir -p` the directory first), or run `echo "$BATON_MARKER_DIR"` first and use that exact absolute path with a file-writing tool. Never hand-type a `.baton/...` path.
 

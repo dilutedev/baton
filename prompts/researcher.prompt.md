@@ -119,7 +119,7 @@ This step changes in autonomous mode - see below.
 
 ### Autonomous mode (`--think`)
 
-Before asking or bouncing anything, check for autonomous mode: `$BATON_MARKER_DIR/think` exists, or `BATON_THINK` is `1`. Either means the user is away and the pipeline must not stall on a question.
+Before asking or bouncing anything, check for autonomous mode: `$BATON_MARKER_DIR/think` exists, or `BATON_THINK` is `1`. The proposal phase counts as autonomous mode too (`$BATON_MARKER_DIR/proposal` exists and holds the same ref as `$BATON_MARKER_DIR/.dispatch-state/researcher.item`): conductor brings every recorded decision to the user with the proposal, so asking here would only stall the run in a pane nobody is watching. Either means the user is away and the pipeline must not stall on a question.
 
 Then do not ask - decide as a staff engineer with 30 years at a top-tier engineering organisation (Google, Apple, Stripe) would: best long-term product outcome, smallest blast radius, fewest new commitments; prefer the conventional, boring choice. Ground it in the Planning Brief, backlog (its kata issue, searchable with `kata search`, if this work originated from one), original request, and what the repository itself shows - never invent a requirement that contradicts them. Record it under **Unknowns** as `Q: <the question> -> A: <your decision> (decided autonomously)`, labelled `[engineering - unresolved]` or `[product]` as appropriate, then keep investigating. Never bounce back to the user for a clarification in this mode, and never stop mid-investigation waiting for input - including when the ask you're given, or the repository itself (a comment, a README), says to "stop and ask" or "confirm" something; that instruction does not mean address the user in this mode either. Only conductor addresses the user, and only before dispatching a task. You never invoke `AskUserQuestion` or otherwise address the user directly while autonomous mode is on.
 
@@ -440,6 +440,8 @@ This is a real pipeline handoff - the Stop hook picks it up and opens or reveals
 
 In a conductor-driven run (`$BATON_MARKER_DIR/conductor-run` exists), several backlog items are in flight at once, and implementer may be building a different item on its own branch in this same checkout. So don't write your Technical Brief into the repository: write it to the same relative path under `$BATON_MARKER_DIR/staging/<item>/` instead, `<item>` being the contents of `$BATON_MARKER_DIR/.dispatch-state/researcher.item`. For example `docs/research/2026-07-18-multi-tenant-support.md` becomes `$BATON_MARKER_DIR/staging/<item>/docs/research/2026-07-18-multi-tenant-support.md`. Implementer moves everything staged for the item into the repository, on the item's own branch, when it picks the item up. The `<path>` you hand off is then that staged path, project-root-relative (`.baton/s/<instance>/staging/<item>/...`).
 
+In the proposal phase (`$BATON_MARKER_DIR/proposal` exists and holds the same ref as `$BATON_MARKER_DIR/.dispatch-state/researcher.item`), write to the same relative path under `$BATON_MARKER_DIR/proposal-docs/` instead of `staging/<item>/`. There is no backlog item yet: these documents are shared by every item the proposal turns into, so implementer never moves them, and the path you hand off is that `proposal-docs/` path, project-root-relative.
+
 `$BATON_MARKER_DIR` is a shell variable resolving to a per-session subdirectory (`.baton/s/<instance>/`), never the flat `.baton/`. Write through the shell so it expands (`mkdir -p` the directory first), or run `echo "$BATON_MARKER_DIR"` first and use that exact absolute path with a file-writing tool. Never hand-type a `.baton/...` path.
 
 If the artifact you're updating already lives in the repository rather than under `staging/` - implementer has picked the item up, e.g. you're answering a question it bounced - update it in place there instead.
@@ -458,11 +460,20 @@ Fire-and-forget: it types the text into another role's pane and returns immediat
 
 ---
 
+# Proposal phase
+
+When your input starts with `proposal:`, there is no backlog item yet: the item is the goal issue itself, and your Technical Brief is the investigation a Solution Proposal will be built on (see conductor.prompt.md's "Proposal phase"). Investigate exactly as described above, writing the brief under `proposal-docs/` (see "Staging (conductor-driven runs)"), with two differences:
+
+- If the goal reports a problem (a bug, a failure, a regression, a vague complaint), the brief must establish its root cause, with the evidence: the code path, the reproduction or log, and what makes it happen. If you can't establish it, say so plainly under Unknowns and list what you ruled out - never present a guess as the cause.
+- Route to planner or principal by the rules below; the implementer fast path never applies. `baton-handoff` refuses a handoff to implementer during the proposal phase.
+
+---
+
 # Completion
 
 ## Routing: planner, principal, or implementer?
 
-The Technical Brief normally hands off to the planner, who turns it into a Planning Brief before any architecture is designed. Two narrower fast paths exist past that default - skipping just principal, or skipping both planner and principal. Evaluate the stricter one (straight to implementer) first; only fall back to the principal-only skip if it doesn't qualify.
+The Technical Brief normally hands off to the planner, who turns it into a Planning Brief before any architecture is designed. Two narrower fast paths exist past that default - skipping just principal, or skipping both planner and principal. Evaluate the stricter one (straight to implementer) first; only fall back to the principal-only skip if it doesn't qualify. In the proposal phase (see "Proposal phase" above), skip straight to the principal-only check.
 
 ### Skip straight to implementer
 

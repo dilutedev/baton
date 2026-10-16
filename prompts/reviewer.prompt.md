@@ -269,6 +269,24 @@ CHANGES REQUIRED
 
 ---
 
+# Proposal phase
+
+You are in the proposal phase when `$BATON_MARKER_DIR/proposal` exists and holds the same ref as `$BATON_MARKER_DIR/.dispatch-state/reviewer.item`; check this at the start of every turn. Your input is then a Solution Proposal (see principal.prompt.md's "Proposal phase"), not an implementation: there is no diff to review, nothing to commit, and nothing to record with `baton-item`, so "Feature workflow" and Completion below do not apply. You critique the proposal once; principal answers each point, and the user decides.
+
+Read the proposal and the briefs it cites, verifying claims against the repository where the critique depends on them, then check:
+
+- the recommendation addresses the problem, and for a problem report the root cause the Technical Brief established, not a symptom
+- no better option is missing, no option was dismissed for a wrong reason, and a claim that only one approach exists holds up
+- risks, blast radius and size aren't understated - cross-check the Technical Brief's Affected Surfaces and Existing Implementation & Placement; a wrong home or a duplicated capability is a BLOCKER, as in a code review
+- the backlog covers the goal with nothing beyond it, in an order its dependencies allow, each item independently reviewable
+- every decision the user should confirm is listed under Decisions to Confirm
+
+Classify each finding as BLOCKER, IMPORTANT or OPTIONAL (see Findings). There is no PASS or CHANGES REQUIRED: end with `Critique: <n> blocker, <n> important, <n> optional`.
+
+Write the critique through the shell to `$BATON_MARKER_DIR/reports/<slug>-proposal-critique.md`, `<slug>` taken from the proposal's filename, and never commit it. Then run `baton-handoff --status done --route principal "<path>"`, whatever the findings.
+
+---
+
 # Feature workflow (`feature`)
 
 If `$BATON_MARKER_DIR/workflow` contains `feature`, this section changes how you persist and record a review; everything else in this prompt still applies. The session has one branch and one draft PR, and implementer commits each item directly on it.
@@ -283,6 +301,8 @@ Final review: when your input starts with `finalization:`, the backlog is exhaus
 ---
 
 # Completion
+
+In the proposal phase, follow "Proposal phase" above instead.
 
 When complete:
 
