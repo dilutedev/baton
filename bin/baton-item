@@ -6,7 +6,9 @@
 #
 #   start <item>                          record the commit the item starts from
 #   complete <item> "<verification>"      record the item's completed commit
-#   publish [--title T] [--body B]        push the branch, create or reuse the draft PR
+#   publish [--branch NAME] [--title T] [--body B]
+#                                         push the branch, create or reuse the draft PR;
+#                                         --branch renames the session branch before its first push
 #   review <item> PASS|CHANGES --commit SHA --report PATH [--summary TEXT]
 #   verify <item>                         succeed only for a recorded PASS on the completed commit
 #   gate <item>                           the check baton-handoff runs before a reviewer PASS counts
@@ -172,11 +174,12 @@ cmd_complete() {
 }
 
 cmd_publish() {
-  local title="" body=""
+  local title="" body="" branch=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
     --title) title="${2:?--title needs a value}"; shift 2 ;;
     --body) body="${2:?--body needs a value}"; shift 2 ;;
+    --branch) branch="${2:?--branch needs a value}"; shift 2 ;;
     *) fail "unknown publish option '$1'" ;;
     esac
   done
@@ -185,6 +188,12 @@ cmd_publish() {
   if [ "$(head_commit)" = "$base_commit" ]; then
     echo "the session branch has no commits yet - nothing to publish"
     return 0
+  fi
+  if [ -n "$branch" ] && [ "$branch" != "$session_branch" ] && [ -z "$(read_marker pr_number)" ] && [ -z "$(published_tip)" ]; then
+    git check-ref-format --branch "$branch" >/dev/null 2>&1 || fail "'$branch' is not a valid branch name"
+    git_in branch -m "$session_branch" "$branch" || fail "could not rename '$session_branch' to '$branch'"
+    session_branch="$branch"
+    record "$marker_dir" session_branch "$session_branch"
   fi
   git_in push --quiet -u "$remote" "$session_branch" || fail "publication blocked: could not push '$session_branch' to '$remote' (diverged or unreachable) - local commits are kept; reconcile and retry"
 

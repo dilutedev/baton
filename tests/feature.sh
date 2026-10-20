@@ -224,7 +224,16 @@ grep -q "not the session branch" "$output"
 git -C "$worktree" switch -q "$session_branch"
 
 : >"$gh_state/calls"
-ROLE=implementer item publish --title "Add widgets" --body "Adds widgets" >/dev/null
+refuses env BATON_MARKER_DIR="$marker" BATON_ROLE=implementer bash "$repository_dir/bin/baton-item" publish --branch "feat/bad..name"
+grep -q "not a valid branch name" "$output"
+[ "$(cat "$marker/session_branch")" = "$session_branch" ]
+[ ! -e "$gh_state/creates" ]
+ROLE=implementer item publish --branch feat/add-widgets --title "Add widgets" --body "Adds widgets" >/dev/null
+! git -C "$project" rev-parse --verify -q "refs/heads/$session_branch" >/dev/null
+! git -C "$remote_repo" rev-parse --verify -q "refs/heads/$session_branch" >/dev/null
+session_branch=feat/add-widgets
+[ "$(cat "$marker/session_branch")" = "$session_branch" ]
+[ "$(git -C "$worktree" rev-parse --abbrev-ref HEAD)" = "$session_branch" ]
 [ "$(wc -l <"$gh_state/creates")" -eq 1 ]
 [ "$(cat "$marker/pr_number")" = 7 ]
 [ "$(cat "$marker/pr_url")" = "https://github.com/acme/widgets/pull/7" ]
@@ -232,8 +241,9 @@ grep -q -- "--draft" "$gh_state/calls"
 grep -q -- "--base main" "$gh_state/calls"
 grep -q -- "--head $session_branch" "$gh_state/calls"
 [ "$(git -C "$remote_repo" rev-parse "refs/heads/$session_branch")" = "$second_commit" ]
-ROLE=implementer item publish >/dev/null
+ROLE=implementer item publish --branch fix/too-late >/dev/null
 [ "$(wc -l <"$gh_state/creates")" -eq 1 ]
+[ "$(cat "$marker/session_branch")" = "$session_branch" ]
 
 rm "$marker/pr_number" "$marker/pr_url"
 printf '[{"number":7,"url":"https://github.com/acme/widgets/pull/7","state":"OPEN"}]\n' >"$gh_state/list.json"

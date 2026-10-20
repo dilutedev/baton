@@ -252,7 +252,9 @@ Per item, roles run `baton-item`:
   checkout is clean on the session branch and every earlier item passed.
 - `complete` records the item's completed commit and its verification summary.
 - `publish` pushes the branch (never force) and creates the draft PR once, or
-  finds and reuses it, including after an interrupted create. A PR that was
+  finds and reuses it, including after an interrupted create. Before the first
+  push, `--branch` renames the `baton/<uuid>` placeholder to a conventional
+  name such as `feat/venue-shutdown`. A PR that was
   closed or merged outside the session stops the session instead of opening a
   replacement.
 - `review` records the verdict, the reviewed commit, and the report path, in
