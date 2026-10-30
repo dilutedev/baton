@@ -54,8 +54,7 @@ git clone <this repo> ~/.baton
 
 cd ~/code/my-project
 kata init                    # once per project
-tmux                         # optional: gives every teammate its own pane
-baton start                  # opens the conductor in this terminal
+baton start                  # from a herdr pane: the conductor opens in that pane
 ```
 
 Tell the conductor your goal, or describe an issue (`baton start --goal "..."`
@@ -145,8 +144,10 @@ teammate's prompt and defines how it talks to the conductor.
   Run `kata init` once per project; the conductor also does it if needed.
 - [`gh`](https://cli.github.com/), authenticated: only for the default
   `feature` workflow, which publishes one pull request to a GitHub remote.
-- `tmux` (optional): with it, every teammate gets its own pane. Without it,
-  teammates run inside the conductor's terminal.
+- [`herdr`](https://herdr.dev/) (recommended). Run `baton start` from a herdr
+  pane and the conductor opens in that pane; run it anywhere else while herdr's
+  server is running and baton opens a herdr workspace for the session. Without
+  herdr, the conductor opens in the terminal you started it from.
 - `bash` 3.2+, `git`, `python3`.
 
 ## Install
@@ -182,7 +183,7 @@ with until you `baton stop` and `baton resume` it.
 ```
 baton start [--base BRANCH] [--workflow|-w feature|worktree] [--think] [--goal TEXT] [DIR]
                              Start a session for DIR (default: cwd) in its own git worktree
-                             and open the conductor in this terminal
+                             and open the conductor (in this herdr pane, or a new herdr workspace)
 baton status [DIR]           List every session for DIR, running or stopped
 baton resume [REF] [DIR]     Reopen a stopped session's conductor
 baton stop [REF] [DIR]       End a running session's conductor
@@ -350,7 +351,7 @@ per-project overrides in `DIR/.baton/config`:
 | `conductor.model` | `opus` | The conductor's model |
 | `conductor.effort` | `medium` | The conductor's effort: `low` to `max` |
 | `worker.max-model` | `opus` | The most expensive model a teammate may get: `haiku`, `sonnet` or `opus` |
-| `teammate-mode` | `auto` | `auto` (own tmux panes inside tmux), `tmux`, `iterm2` or `in-process` |
+| `teammate-mode` | `in-process` | Where teammates appear: `in-process` runs them inside the conductor's pane. Claude Code's other modes (`auto`, `tmux`, `iterm2`) need tmux or iTerm2, not herdr |
 | `permission-mode` | Claude Code's default | Passed to the conductor's session, and so to its teammates |
 
 `baton config DIR` shows what a directory resolves to.
@@ -376,9 +377,12 @@ the conductor stops after that many items.
 - `baton start` creates the worktree and marker dir, writes the agent
   definitions, writes the conductor's system prompt (`prompts/conductor.prompt.md`
   plus the session's facts: paths, workflow, allowed models, limits) to
-  `.baton/s/<id>/conductor.prompt.md`, and then becomes `claude` in the
-  worktree with agent teams enabled. Its pid is recorded, which is how
-  `status` and `stop` know whether the session is running.
+  `.baton/s/<id>/conductor.prompt.md`, and starts `claude` in the worktree
+  with agent teams enabled. From a herdr pane (`HERDR_ENV` set) it becomes
+  `claude` in that pane and records its pid. Otherwise, with herdr's server
+  running, it opens a herdr workspace, starts the conductor there as a herdr
+  agent, records the workspace and tab, and switches you into herdr. That
+  record is how `status`, `stop` and `remove` find the session.
 - The conductor spawns teammates with the Agent tool from the
   `baton-<role>` definitions, naming the model per task. Messages between
   them use Claude Code's team mailbox, and arrive without polling.
@@ -416,7 +420,7 @@ The `BATON_MAX_*` and `BATON_THINK` values are read when you run
 ## Tests
 
 Plain bash, no framework: `bash tests/<name>.sh` (`conductor`, `feature`,
-`remove`, `status`, `update`, `worktree`). They stub `claude`, `kata` and `gh`,
+`remove`, `status`, `update`, `worktree`). They stub `claude`, `herdr`, `kata` and `gh`,
 and never launch real agents or touch GitHub.
 
 ## Limitations

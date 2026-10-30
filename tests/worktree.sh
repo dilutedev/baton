@@ -29,6 +29,8 @@ chmod +x "$stub_dir/claude" "$stub_dir/kata"
 
 export PATH="$stub_dir:$PATH"
 export CLAUDE_LOG="$test_root/claude.log"
+# As if run from a herdr pane: the conductor takes over this terminal.
+export HERDR_ENV=1
 export BATON_WORKTREE_DIR="$test_root/worktrees"
 export HOME="$test_root/home"
 mkdir -p "$HOME"
@@ -109,10 +111,11 @@ launch_line="$(grep "^launch" "$CLAUDE_LOG" | tail -n1)"
 }
 args_line="$(grep "^args:" "$CLAUDE_LOG" | tail -n1)"
 case "$args_line" in
-*"--model opus --effort medium --teammate-mode auto"*"# This session"*"$first_worktree"*) ;;
+*"--model opus --effort medium --teammate-mode in-process --name baton-$first_session --append-system-prompt-file $first_marker/conductor.prompt.md"*) ;;
 *) echo "conductor arguments are wrong: $args_line"; exit 1 ;;
 esac
 [ "$(cat "$first_marker/pid")" -gt 0 ]
+grep -q "# This session" "$first_marker/conductor.prompt.md"
 [ "$(cat "$(git -C "$first_worktree" rev-parse --path-format=absolute --git-dir)/baton-marker")" = "$first_marker" ]
 for role in researcher planner principal implementer reviewer; do
   agent_file="$HOME/.claude/agents/baton-$role.md"

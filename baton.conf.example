@@ -19,9 +19,11 @@ conductor.effort=medium
 # or opus. Lower it to cap spending; the conductor then works with what's left.
 worker.max-model=opus
 
-# Where teammates appear: auto (own tmux panes when baton runs inside tmux,
-# otherwise inside the conductor's terminal), tmux, iterm2, or in-process.
-teammate-mode=auto
+# Where teammates appear. in-process runs them inside the conductor's herdr
+# pane (arrow keys to pick one, Enter to view and message it). Claude Code
+# can only give teammates panes of their own under tmux or iTerm2 (tmux,
+# iterm2, auto), not herdr.
+teammate-mode=in-process
 
 # Claude Code permission mode for the session (teammates start with the
 # conductor's): default, acceptEdits, auto, or plan. Unset uses Claude Code's

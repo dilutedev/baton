@@ -55,6 +55,7 @@ EOF
 chmod +x "$stub_dir/claude" "$stub_dir/kata" "$stub_dir/gh"
 
 export PATH="$stub_dir:$PATH"
+export HERDR_ENV=1
 export KATA_LOG="$test_root/kata.log"
 export GH_STATE="$gh_state"
 export BATON_WORKTREE_DIR="$test_root/worktrees"

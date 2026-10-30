@@ -19,6 +19,7 @@ EOF
 chmod +x "$stub_dir/claude" "$stub_dir/kata"
 
 export PATH="$stub_dir:$PATH"
+export HERDR_ENV=1
 export CLAUDE_ARGS="$test_root/claude-args"
 export BATON_WORKTREE_DIR="$test_root/worktrees"
 export BATON_CONF="$test_root/baton.conf"
@@ -95,4 +96,48 @@ EOF
 grep -Eq '^claude-opus-5-5 +1 +10 +100 +1000 +50$' "$test_root/cost-output"
 grep -Eq '^claude-haiku-5-5 +2 +10 +0 +0 +10$' "$test_root/cost-output"
 
+# Outside a herdr pane, with herdr running, the conductor gets its own herdr
+# workspace in the worktree, and stop closes that workspace.
+cat >"$stub_dir/herdr" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$HERDR_LOG"
+case "${1:-} ${2:-}" in
+"status --json") printf '{"server":{"status":"running"}}\n' ;;
+"workspace create") printf '{"result":{"workspace":{"workspace_id":"w1"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n' ;;
+"tab get") [ ! -e "$HERDR_LOG.closed" ] || { printf '{"error":{"code":"tab_not_found"}}\n' >&2; exit 1; } ;;
+"workspace close") touch "$HERDR_LOG.closed" ;;
+esac
+exit 0
+EOF
+chmod +x "$stub_dir/herdr"
+export HERDR_LOG="$test_root/herdr.log"
+printf 'worker.max-model=sonnet\n' >"$BATON_CONF"
+: >"$CLAUDE_ARGS"
+env -u HERDR_ENV "$baton" start --base main "$repo" >/dev/null 2>&1
+herdr_marker="$(ls -dt "$repo"/.baton/s/*/ | head -n 1)"
+herdr_marker="${herdr_marker%/}"
+herdr_worktree="$(cat "$herdr_marker/worktree")"
+create_line="$(grep "^workspace create" "$HERDR_LOG")"
+case "$create_line" in
+*"--cwd $herdr_worktree"*"--env CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1"*"--env BATON_MARKER_DIR=$herdr_marker"*) ;;
+*) echo "the herdr workspace is wrong: $create_line"; exit 1 ;;
+esac
+start_line="$(grep "^agent start" "$HERDR_LOG")"
+case "$start_line" in
+*"conductor-$(basename "$herdr_marker") --kind claude --pane w1:p1"*"--teammate-mode in-process"*"--append-system-prompt-file $herdr_marker/conductor.prompt.md"*) ;;
+*) echo "the conductor wasn't started in the herdr pane: $start_line"; exit 1 ;;
+esac
+grep -qx "pane rename w1:p1 conductor" "$HERDR_LOG"
+[ ! -s "$CLAUDE_ARGS" ]
+[ ! -e "$herdr_marker/pid" ]
+[ "$(cat "$herdr_marker/tab_id")" = w1:t1 ]
+"$baton" status "$repo" >"$test_root/status-output"
+grep -q "^$(basename "$herdr_marker")  running" "$test_root/status-output"
+"$baton" stop "$(basename "$herdr_marker")" "$repo" >"$test_root/stop-output"
+grep -q stopped "$test_root/stop-output"
+grep -qx "workspace close w1" "$HERDR_LOG"
+"$baton" status "$repo" >"$test_root/status-output"
+grep -q "^$(basename "$herdr_marker")  stopped" "$test_root/status-output"
+
 printf 'conductor checks passed\n'
+

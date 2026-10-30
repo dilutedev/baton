@@ -41,7 +41,7 @@ Usage:
   baton start [--base BRANCH] [--workflow|-w feature|worktree] [--think] [--goal TEXT] [DIR]
                                        Start a new session for DIR (default: cwd) in its own git worktree,
                                        branched from BASE (default: the remote's default branch), and
-                                       open the conductor in this terminal
+                                       open the conductor (in this herdr pane, or a new herdr workspace)
   baton status [DIR]                   List every session for DIR, running or stopped
   baton resume [REF] [DIR]             Reopen a stopped session's conductor (fresh conversation, same session)
   baton stop [REF] [DIR]               End a running session's conductor
@@ -52,9 +52,10 @@ Usage:
 
 REF (a slug or session id) is optional when DIR has exactly one session.
 
-Run baton inside tmux to give every teammate its own pane; anywhere else
-they run inside the conductor's terminal (arrow keys to pick one, Enter to
-view it). Settings live in baton.conf (next to this script's parent dir, or
+Run from a herdr pane, the conductor opens in that pane; from anywhere else
+with herdr running, baton opens a herdr workspace for it. Teammates run
+inside the conductor's pane (arrow keys to pick one, Enter to view it and
+message it). Settings live in baton.conf (next to this script's parent dir, or
 $BATON_CONF), with per-project overrides in DIR/.baton/config.
 EOF
 }
@@ -269,7 +270,7 @@ resolve_setting() {
   conductor.model) echo opus ;;
   conductor.effort) echo medium ;;
   worker.max-model) echo opus ;;
-  teammate-mode) echo auto ;;
+  teammate-mode) echo in-process ;;
   esac
 }
 
@@ -436,37 +437,110 @@ EOF
   echo "$file"
 }
 
-# instance_running <marker_dir> -> true while that session's conductor
-# process is alive.
-instance_running() {
-  local pid
-  pid="$(cat "$1/pid" 2>/dev/null || true)"
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= 2>/dev/null | grep -q claude
+# herdr_available -> true when herdr is installed and its server is running.
+herdr_available() {
+  command -v herdr >/dev/null 2>&1 &&
+    [ "$(json_get "$(herdr status --json 2>/dev/null)" server.status)" = "running" ]
 }
 
-# launch_conductor <dir> <marker_dir> <work_dir> [initial message] ->
-# replaces this process with the conductor's Claude Code session, so the
-# recorded pid is the conductor's own.
+# instance_running <marker_dir> -> true while that session's conductor is
+# alive: its process, when it runs in the terminal baton started from, or
+# its herdr tab, when baton opened a herdr workspace for it.
+instance_running() {
+  local pid tab
+  pid="$(cat "$1/pid" 2>/dev/null || true)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= 2>/dev/null | grep -q claude; then
+    return 0
+  fi
+  tab="$(cat "$1/tab_id" 2>/dev/null || true)"
+  [ -n "$tab" ] && command -v herdr >/dev/null 2>&1 && herdr tab get "$tab" >/dev/null 2>&1
+}
+
+# stop_conductor <marker_dir> -> ends a running session's conductor, by
+# closing the herdr workspace (or tab) it runs in or by signalling it.
+stop_conductor() {
+  local marker_dir="$1" tab workspace
+  tab="$(cat "$marker_dir/tab_id" 2>/dev/null || true)"
+  workspace="$(cat "$marker_dir/workspace_id" 2>/dev/null || true)"
+  if [ -n "$tab" ] && command -v herdr >/dev/null 2>&1 && herdr tab get "$tab" >/dev/null 2>&1; then
+    if [ "$(cat "$marker_dir/owns_workspace" 2>/dev/null || echo 1)" = 1 ] && [ -n "$workspace" ]; then
+      herdr workspace close "$workspace" >/dev/null
+    else
+      herdr tab close "$tab" >/dev/null
+    fi
+  else
+    kill "$(cat "$marker_dir/pid")"
+  fi
+}
+
+# launch_in_herdr <marker_dir> <work_dir> <name> -> opens a herdr workspace
+# for the session with the conductor in its one pane, then switches into
+# herdr. Teammates run inside the conductor's pane: Claude Code only gives
+# teammates panes of their own under tmux or iTerm2.
+launch_in_herdr() {
+  local marker_dir="$1" work_dir="$2" name="$3" flags=() var create_json workspace_id tab_id pane_id start_json attempt=0
+  local agent="conductor-$(basename "$marker_dir")"
+  for var in "${CONDUCTOR_ENV[@]}"; do flags+=(--env "$var"); done
+  create_json="$(herdr workspace create --cwd "$work_dir" --label "$name" "${flags[@]}" --no-focus)" || return 1
+  workspace_id="$(json_get "$create_json" result.workspace.workspace_id)"
+  tab_id="$(json_get "$create_json" result.tab.tab_id)"
+  pane_id="$(json_get "$create_json" result.root_pane.pane_id)"
+  [ -n "$workspace_id" ] && [ -n "$tab_id" ] && [ -n "$pane_id" ] || {
+    echo "baton: herdr didn't return a workspace, tab and pane - got: $create_json" >&2
+    return 1
+  }
+  echo "$workspace_id" >"$marker_dir/workspace_id"
+  echo "$tab_id" >"$marker_dir/tab_id"
+  echo 1 >"$marker_dir/owns_workspace"
+  herdr pane rename "$pane_id" conductor >/dev/null 2>&1 || true
+  # A fresh pane briefly isn't at its shell prompt yet, which `agent start`
+  # requires; retry only that fast-failing error.
+  while :; do
+    attempt=$((attempt + 1))
+    start_json="$(herdr agent start "$agent" --kind claude --pane "$pane_id" --timeout 60000 -- "${CONDUCTOR_ARGS[@]}" 2>&1)" && break
+    if [ "$(json_get "$start_json" error.code)" = "agent_pane_busy" ] && [ "$attempt" -lt 15 ]; then
+      sleep 1
+      continue
+    fi
+    echo "$start_json" >&2
+    herdr workspace close "$workspace_id" >/dev/null 2>&1 || true
+    rm -f "$marker_dir/workspace_id" "$marker_dir/tab_id" "$marker_dir/owns_workspace"
+    return 1
+  done
+  echo "baton: the conductor is running in herdr workspace '$name'"
+  herdr tab focus "$tab_id" >/dev/null 2>&1 || true
+  exec herdr
+}
+
+# launch_conductor <dir> <marker_dir> <work_dir> [initial message] -> runs
+# the conductor's Claude Code session. Inside a herdr pane (or without a
+# running herdr) it replaces this process, in this terminal, so the
+# recorded pid is the conductor's own; otherwise it opens a herdr workspace
+# for it (see launch_in_herdr).
 launch_conductor() {
-  local dir="$1" marker_dir="$2" work_dir="$3" message="${4:-}" prompt_file name args mode permission
+  local dir="$1" marker_dir="$2" work_dir="$3" message="${4:-}" prompt_file name permission
   # Called from `cmd || handler` contexts, where errexit is off, so every
   # step checks its own failure before the exec.
   prepare_profile "$work_dir" || return 1
   install_agents || return 1
   prompt_file="$(write_conductor_prompt "$dir" "$marker_dir" "$work_dir")" || return 1
   name="baton-$(cat "$marker_dir/slug" 2>/dev/null || basename "$marker_dir")"
-  mode="$(resolve_setting "$dir" teammate-mode)"
-  args=(--model "$(resolve_setting "$dir" conductor.model)" --effort "$(resolve_setting "$dir" conductor.effort)"
-    --teammate-mode "$mode" --name "$name" --append-system-prompt "$(cat "$prompt_file")")
+  CONDUCTOR_ARGS=(--model "$(resolve_setting "$dir" conductor.model)" --effort "$(resolve_setting "$dir" conductor.effort)"
+    --teammate-mode "$(resolve_setting "$dir" teammate-mode)" --name "$name" --append-system-prompt-file "$prompt_file")
   permission="$(resolve_setting "$dir" permission-mode)"
-  [ -z "$permission" ] || args+=(--permission-mode "$permission")
-  [ -z "$message" ] || args+=("$message")
+  [ -z "$permission" ] || CONDUCTOR_ARGS+=(--permission-mode "$permission")
+  [ -z "$message" ] || CONDUCTOR_ARGS+=("$message")
+  CONDUCTOR_ENV=(CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 "PATH=$BIN_DIR:$PATH"
+    "BATON_ROOT=$work_dir" "BATON_MARKER_DIR=$marker_dir")
+  rm -f "$marker_dir/pid" "$marker_dir/workspace_id" "$marker_dir/tab_id" "$marker_dir/owns_workspace"
 
+  if [ -z "${HERDR_ENV:-}" ] && herdr_available; then
+    launch_in_herdr "$marker_dir" "$work_dir" "$name"
+    return
+  fi
   echo "$$" >"$marker_dir/pid"
   cd "$work_dir"
-  exec env CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 PATH="$BIN_DIR:$PATH" \
-    BATON_ROOT="$work_dir" BATON_MARKER_DIR="$marker_dir" \
-    "$CLAUDE_BIN" "${args[@]}"
+  exec env "${CONDUCTOR_ENV[@]}" "$CLAUDE_BIN" "${CONDUCTOR_ARGS[@]}"
 }
 
 # resume_message <marker_dir> -> the conductor's first message on resume,
@@ -619,7 +693,7 @@ cmd_resume() {
 
   local marker_dir="$DIR/.baton/s/$instance"
   if instance_running "$marker_dir"; then
-    echo "baton: session '$instance' is already running (pid $(cat "$marker_dir/pid")) - switch to its terminal, or 'baton stop ${REF:-$instance}' first" >&2
+    echo "baton: session '$instance' is already running - switch to it, or 'baton stop ${REF:-$instance}' first" >&2
     exit 1
   fi
 
@@ -654,7 +728,7 @@ cmd_stop() {
   instance="$(resolve_instance "$DIR" "$REF")" || exit 1
   local marker_dir="$DIR/.baton/s/$instance"
   if instance_running "$marker_dir"; then
-    kill "$(cat "$marker_dir/pid")"
+    stop_conductor "$marker_dir"
     echo "baton: stopped '$instance'"
   else
     echo "baton: session '$instance' isn't running"
@@ -751,7 +825,7 @@ cmd_remove() {
   fi
 
   if instance_running "$marker_dir"; then
-    kill "$(cat "$marker_dir/pid")" || exit 1
+    stop_conductor "$marker_dir" || exit 1
   fi
 
   if [ -n "$(session_workflow "$marker_dir")" ]; then

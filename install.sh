@@ -16,7 +16,7 @@ fi
 for cmd in claude kata; do
   command -v "$cmd" >/dev/null 2>&1 || echo "install.sh: warning - '$cmd' not found on PATH, baton needs it"
 done
-command -v tmux >/dev/null 2>&1 || echo "install.sh: note - 'tmux' not found on PATH; without it teammates share the conductor's terminal instead of getting their own panes"
+command -v herdr >/dev/null 2>&1 || echo "install.sh: note - 'herdr' not found on PATH; without it the conductor opens in the terminal you run baton from"
 
 rc_file=""
 case "${SHELL:-}" in
