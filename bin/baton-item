@@ -11,7 +11,7 @@
 #                                         --branch renames the session branch before its first push
 #   review <item> PASS|CHANGES --commit SHA --report PATH [--summary TEXT]
 #   verify <item>                         succeed only for a recorded PASS on the completed commit
-#   gate <item>                           the check baton-handoff runs before a reviewer PASS counts
+#   gate <item>                           the check the conductor runs before it accepts a reviewer PASS
 #   status                                items, publication and finalization state
 #   final-start                           begin whole-feature finalization
 #   final-review PASS|CHANGES --commit SHA --report PATH [--summary TEXT]
@@ -23,7 +23,13 @@ fail() {
   exit 1
 }
 
-[ -n "${BATON_MARKER_DIR:-}" ] || fail "BATON_MARKER_DIR is not set"
+# A teammate's shell may not inherit BATON_MARKER_DIR; `baton start` also
+# records the marker dir in the worktree's git dir, so look there.
+if [ -z "${BATON_MARKER_DIR:-}" ]; then
+  pointer="$(git rev-parse --path-format=absolute --git-dir 2>/dev/null)/baton-marker"
+  [ -f "$pointer" ] && BATON_MARKER_DIR="$(cat "$pointer")"
+fi
+[ -n "${BATON_MARKER_DIR:-}" ] || fail "BATON_MARKER_DIR is not set and this isn't a baton session worktree"
 marker_dir="$BATON_MARKER_DIR"
 [ "$(cat "$marker_dir/workflow" 2>/dev/null || true)" = feature ] || fail "this session does not use the feature workflow"
 
@@ -138,6 +144,7 @@ all_items_verified() {
 cmd_start() {
   local item
   item="$(item_name "${1:-}")"
+  [ ! -f "$marker_dir/proposal" ] || fail "the goal is still in its proposal phase - nothing is built until the user approves the proposal"
   require_session_branch
   require_clean
   local dir other
@@ -330,10 +337,12 @@ cmd_gate() {
 
 cmd_status() {
   echo "branch $session_branch at $(head_commit | cut -c1-12), base $base_branch"
-  local build
-  build="$(cat "$marker_dir/.dispatch-state/build.item" 2>/dev/null || true)"
+  local dir item build=""
+  for dir in "$items_dir"/*/; do
+    [ -d "$dir" ] || continue
+    [ "$(item_value "$(basename "$dir")" verdict)" = PASS ] || build="$(basename "$dir")"
+  done
   echo "build item: ${build:-none}"
-  local dir item
   for dir in "$items_dir"/*/; do
     [ -d "$dir" ] || continue
     item="$(basename "$dir")"

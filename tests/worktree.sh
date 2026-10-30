@@ -7,45 +7,33 @@ stub_dir="$test_root/stubs"
 mkdir -p "$stub_dir"
 
 cleanup() {
-  local pid_file
-  for pid_file in "$test_root"/*/.baton/s/*/courier.pid; do
-    [ -f "$pid_file" ] && kill "$(cat "$pid_file")" 2>/dev/null || true
-  done
   rm -rf -- "$test_root"
 }
 trap cleanup EXIT
 
-cat >"$stub_dir/herdr" <<'EOF'
+cat >"$stub_dir/claude" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$HERDR_LOG"
-case "$1 $2" in
-"status --json") printf '{"server":{"status":"running"}}\n' ;;
-"workspace create")
-  if [ "${HERDR_FAIL:-}" = workspace-create ]; then
-    printf '{"error":{"code":"server_error"}}\n' >&2
-    exit 1
-  fi
-  printf '{"result":{"workspace":{"workspace_id":"w1"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n'
-  ;;
-"pane split") printf '{"result":{"pane":{"pane_id":"w1:p%s"}}}\n' "$RANDOM" ;;
-"tab get") if [ "${HERDR_TAB_LIVE:-}" = 1 ]; then printf '{"result":{}}\n'; else printf '{"error":{"code":"tab_not_found"}}\n' >&2; exit 1; fi ;;
-*) printf '{"result":{}}\n' ;;
-esac
+{
+  printf 'launch cwd=%s root=%s marker=%s teams=%s\n' "$PWD" "${BATON_ROOT:-}" "${BATON_MARKER_DIR:-}" "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}"
+  printf 'args:'
+  printf ' %s' "$@" | tr '\n' ' '
+  printf '\n'
+} >>"$CLAUDE_LOG"
 EOF
 cat >"$stub_dir/kata" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" = health ] && printf '{"ok":true}\n'
 exit 0
 EOF
-chmod +x "$stub_dir/herdr" "$stub_dir/kata"
+chmod +x "$stub_dir/claude" "$stub_dir/kata"
 
 export PATH="$stub_dir:$PATH"
-export HERDR_LOG="$test_root/herdr.log"
+export CLAUDE_LOG="$test_root/claude.log"
+# As if run from a herdr pane: the conductor takes over this terminal.
 export HERDR_ENV=1
 export BATON_WORKTREE_DIR="$test_root/worktrees"
 export HOME="$test_root/home"
 mkdir -p "$HOME"
-unset HERDR_WORKSPACE_ID
 
 baton="$repository_dir/bin/baton"
 
@@ -87,7 +75,7 @@ for invalid_base in v1 "$main_head" missing-branch; do
   grep -q "baton:" "$test_root/invalid-output"
 done
 [ ! -e "$local_repo/.baton/s" ]
-[ ! -s "$HERDR_LOG" ] || ! grep -q "workspace create" "$HERDR_LOG"
+[ ! -s "$CLAUDE_LOG" ]
 
 if "$baton" start --yes "$local_repo" >"$test_root/no-default-output" 2>&1; then
   echo "a repository without a remote has no default base"
@@ -116,28 +104,32 @@ grep -q 'caller edit' "$local_repo/file.txt"
 grep -qx '\.baton/' "$local_repo/.git/info/exclude"
 git -C "$local_repo" check-ignore -q .baton/
 
-launch_line="$(grep "workspace create" "$HERDR_LOG" | tail -n1)"
-case "$launch_line" in
-*"--cwd $first_worktree"*) ;;
-*) echo "workspace was not created in the worktree: $launch_line"; exit 1 ;;
+launch_line="$(grep "^launch" "$CLAUDE_LOG" | tail -n1)"
+[ "$launch_line" = "launch cwd=$first_worktree root=$first_worktree marker=$first_marker teams=1" ] || {
+  echo "the conductor was not launched in the worktree: $launch_line"
+  exit 1
+}
+args_line="$(grep "^args:" "$CLAUDE_LOG" | tail -n1)"
+case "$args_line" in
+*"--model opus --effort medium --teammate-mode in-process --name baton-$first_session --append-system-prompt-file $first_marker/conductor.prompt.md"*) ;;
+*) echo "conductor arguments are wrong: $args_line"; exit 1 ;;
 esac
-case "$launch_line" in
-*"BATON_ROOT=$first_worktree"*"BATON_MARKER_DIR=$first_marker"*) ;;
-*) echo "pane environment is wrong: $launch_line"; exit 1 ;;
-esac
-split_count="$(grep -c "pane split" "$HERDR_LOG")"
-[ "$split_count" = 5 ]
-[ "$(grep "pane split" "$HERDR_LOG" | grep -c -- "--cwd $first_worktree")" = 5 ]
-[ "$(cat "$first_marker/workspace_id")" = w1 ]
-[ "$(cat "$first_marker/owns_workspace")" = 1 ]
+[ "$(cat "$first_marker/pid")" -gt 0 ]
+grep -q "# This session" "$first_marker/conductor.prompt.md"
+[ "$(cat "$(git -C "$first_worktree" rev-parse --path-format=absolute --git-dir)/baton-marker")" = "$first_marker" ]
+for role in researcher planner principal implementer reviewer; do
+  agent_file="$HOME/.claude/agents/baton-$role.md"
+  head -n 2 "$agent_file" | grep -qx "name: baton-$role"
+  grep -q "^# Working on a baton team" "$agent_file"
+done
+python3 -c 'import json, sys; assert json.load(open(sys.argv[1]))["projects"][sys.argv[2]]["hasTrustDialogAccepted"]' \
+  "$HOME/.claude.json" "$first_worktree"
 
-HERDR_WORKSPACE_ID=w-outer "$baton" start --yes --base main "$local_repo" >/dev/null
+"$baton" start --base main "$local_repo" >/dev/null
 second_marker="$(ls -d "$local_repo"/.baton/s/*/ | grep -v "$first_session" | head -n1)"
 second_marker="${second_marker%/}"
 [ "$(cat "$second_marker/worktree")" != "$first_worktree" ]
 [ "$(cat "$second_marker/session_branch")" != "baton/$first_session" ]
-[ "$(cat "$second_marker/owns_workspace")" = 1 ]
-[ "$(grep -c "tab create" "$HERDR_LOG" || true)" = 0 ]
 
 (cd "$first_worktree" && "$baton" status) >"$test_root/status-output"
 grep -q "worktree" "$test_root/status-output"
@@ -152,7 +144,6 @@ if "$baton" remove "$first_session" "$local_repo" >"$test_root/dirty-output" 2>&
 fi
 grep -q "uncommitted" "$test_root/dirty-output"
 [ -d "$first_marker" ] && [ -d "$first_worktree" ]
-! grep -q "workspace close" "$HERDR_LOG"
 
 git -C "$first_worktree" checkout -q -- file.txt
 printf 'SECRET=1\n' >"$first_worktree/.env"
@@ -179,13 +170,10 @@ if "$baton" resume --yes "$second_session" "$local_repo" >"$test_root/resume-mis
 fi
 grep -q "missing" "$test_root/resume-missing-output"
 mv "$second_worktree.moved" "$second_worktree"
-: >"$HERDR_LOG"
-"$baton" resume --yes "$second_session" "$local_repo" >/dev/null
-resume_line="$(grep "workspace create" "$HERDR_LOG" | tail -n1)"
-case "$resume_line" in
-*"--cwd $second_worktree"*"BATON_ROOT=$second_worktree"*) ;;
-*) echo "resume did not reuse the checkout: $resume_line"; exit 1 ;;
-esac
+: >"$CLAUDE_LOG"
+"$baton" resume "$second_session" "$local_repo" >/dev/null
+grep -qx "launch cwd=$second_worktree root=$second_worktree marker=$second_marker teams=1" "$CLAUDE_LOG"
+grep -q "^args:.*Resuming this session - no goal has been given yet" "$CLAUDE_LOG"
 
 remote_repo="$test_root/remote.git"
 upstream="$test_root/upstream"
@@ -239,8 +227,9 @@ grep -q "several remotes" "$test_root/ambiguous-output"
 
 failing_repo="$test_root/failing"
 make_repository "$failing_repo"
-if HERDR_FAIL=workspace-create "$baton" start --yes --base main "$failing_repo" >"$test_root/failed-start-output" 2>&1; then
-  echo "start should fail when herdr cannot create the workspace"
+printf 'my own agent\n' >"$HOME/.claude/agents/baton-reviewer.md"
+if "$baton" start --base main "$failing_repo" >"$test_root/failed-start-output" 2>&1; then
+  echo "start should fail when it cannot install the role agents"
   exit 1
 fi
 failed_marker="$failing_repo/.baton/s/$(only_session "$failing_repo")"
@@ -256,5 +245,6 @@ mkdir -p "$legacy_marker"
 printf 'worktree-v1\n' >"$legacy_marker/workflow_version"
 "$baton" status "$failing_repo" >/dev/null
 [ "$(cat "$legacy_marker/workflow")" = worktree ]
+rm "$HOME/.claude/agents/baton-reviewer.md"
 
 printf 'worktree checks passed\n'
