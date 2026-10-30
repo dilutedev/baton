@@ -13,7 +13,7 @@ if [ ! -f "$ROOT_DIR/baton.conf" ]; then
   echo "install.sh: created $ROOT_DIR/baton.conf from baton.conf.example - edit it to taste"
 fi
 
-for cmd in herdr kata uuidgen; do
+for cmd in herdr kata; do
   command -v "$cmd" >/dev/null 2>&1 || echo "install.sh: warning - '$cmd' not found on PATH, baton needs it"
 done
 

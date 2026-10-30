@@ -78,7 +78,6 @@ Each persona lives in `prompts/<role>.prompt.md`. Simple items can skip ahead
 - [`gh`](https://cli.github.com/), authenticated (`gh auth login`) - only for the
   default `feature` workflow, which publishes one pull request to a GitHub
   remote (see [One PR per feature](#one-pr-per-feature))
-- `uuidgen` (ships with macOS and most Linux distros)
 - `bash` 3.2+ (the scripts avoid associative arrays for macOS's stock bash)
 - `python3` - used by `install.sh` to merge the Stop hook into
   `~/.claude/settings.json` without clobbering your other hooks, and by
@@ -97,7 +96,7 @@ git clone <this repo> ~/.baton
 1. Makes the scripts executable.
 2. Creates `baton.conf` from `baton.conf.example` if you don't have one yet.
    Your `baton.conf` is git-ignored and never overwritten.
-3. Warns if `herdr`, `kata`, or `uuidgen` aren't on PATH, and notes (without
+3. Warns if `herdr` or `kata` aren't on PATH, and notes (without
    warning) which of `claude`/`codex`/`omp` aren't.
 4. Appends `export PATH="$HOME/.baton/bin:$PATH"` to your `~/.zshrc` or
    `~/.bashrc` (whichever matches `$SHELL`) if it isn't already there.

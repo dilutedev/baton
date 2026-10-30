@@ -1150,6 +1150,15 @@ attach_or_launch() {
   fi
 }
 
+# Eight hex characters, from uuidgen when present and /dev/urandom otherwise.
+new_instance_id() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr 'A-Z' 'a-z' | cut -c1-8
+  else
+    od -An -N4 -tx1 /dev/urandom | tr -d ' \n'
+  fi
+}
+
 cmd_start() {
   local think=0 dir="." yes=0 requested_base="" workflow="" pr_repo=""
   while [ "$#" -gt 0 ]; do
@@ -1212,7 +1221,7 @@ cmd_start() {
   fi
 
   local instance
-  instance="$(uuidgen | tr 'A-Z' 'a-z' | cut -c1-8)"
+  instance="$(new_instance_id)"
   local marker_dir="$dir/.baton/s/$instance"
   local session_branch="baton/$instance"
   local worktree_path="${BATON_WORKTREE_DIR:-$HOME/.baton-worktrees}/$(basename "$dir")-$instance"
