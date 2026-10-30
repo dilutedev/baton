@@ -3,36 +3,23 @@ set -euo pipefail
 
 repository_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 test_root="$(mktemp -d)"
-trap 'rm -rf -- "$test_root"' EXIT
+conductor_pid=""
+cleanup() {
+  [ -z "$conductor_pid" ] || kill "$conductor_pid" 2>/dev/null || true
+  rm -rf -- "$test_root"
+}
+trap cleanup EXIT
 project_dir="$test_root/project"
 instances_dir="$project_dir/.baton/s"
-mkdir -p "$instances_dir/abcdef12" "$instances_dir/12345678"
-printf 'live-tab\n' >"$instances_dir/abcdef12/tab_id"
-printf 'live-workspace\n' >"$instances_dir/abcdef12/workspace_id"
-printf '1\n' >"$instances_dir/abcdef12/owns_workspace"
+mkdir -p "$instances_dir/abcdef12" "$instances_dir/12345678" "$test_root/stubs"
+
+# A stand-in conductor: any live process whose command line names claude.
+printf '#!/usr/bin/env bash\nsleep 30\n' >"$test_root/stubs/claude"
+chmod +x "$test_root/stubs/claude"
+"$test_root/stubs/claude" &
+conductor_pid=$!
+printf '%s\n' "$conductor_pid" >"$instances_dir/abcdef12/pid"
 printf 'keep\n' >"$instances_dir/12345678/marker"
-
-herdr() {
-  case "$1 $2" in
-  "status --json") printf '{"server":{"status":"running"}}\n' ;;
-  "tab get")
-    case "$3" in
-    live-tab) printf '{"result":{}}\n' ;;
-    missing-tab) printf '{"error":{"code":"tab_not_found"}}\n' >&2; return 1 ;;
-    *) printf '{"error":{"code":"server_error"}}\n' >&2; return 1 ;;
-    esac
-    ;;
-  "workspace close") printf '%s\n' "$3" >"$test_root/closed-workspace" ;;
-  "tab close") printf '%s\n' "$3" >"$test_root/closed-tab" ;;
-  esac
-}
-
-kata() {
-  printf '{"ok":true}\n'
-}
-
-export -f herdr kata
-export test_root
 
 if "$repository_dir/bin/baton" remove "$project_dir" >"$test_root/ambiguous-output" 2>&1; then
   exit 1
@@ -43,25 +30,19 @@ fi
 "$repository_dir/bin/baton" remove abcdef12 "$project_dir" >"$test_root/live-output"
 [ ! -e "$instances_dir/abcdef12" ]
 [ -f "$instances_dir/12345678/marker" ]
-[ "$(cat "$test_root/closed-workspace")" = live-workspace ]
-
-printf 'missing-tab\n' >"$instances_dir/12345678/tab_id"
-"$repository_dir/bin/baton" remove 12345678 "$project_dir" >"$test_root/stopped-output" 2>&1 || { sed -n '1,40p' "$test_root/stopped-output"; exit 1; }
-[ ! -e "$instances_dir/12345678" ]
-
-mkdir -p "$instances_dir/abcdef78"
-printf 'live-tab\n' >"$instances_dir/abcdef78/tab_id"
-printf '0\n' >"$instances_dir/abcdef78/owns_workspace"
-"$repository_dir/bin/baton" remove abcdef78 "$project_dir" >"$test_root/tab-output"
-[ ! -e "$instances_dir/abcdef78" ]
-[ "$(cat "$test_root/closed-tab")" = live-tab ]
-
-mkdir -p "$instances_dir/abcdef34"
-printf 'error-tab\n' >"$instances_dir/abcdef34/tab_id"
-if "$repository_dir/bin/baton" remove abcdef34 "$project_dir" >"$test_root/error-output" 2>&1; then
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  kill -0 "$conductor_pid" 2>/dev/null || break
+  sleep 0.2
+done
+if kill -0 "$conductor_pid" 2>/dev/null; then
+  echo "remove should have ended the running conductor"
   exit 1
 fi
-[ -d "$instances_dir/abcdef34" ]
+
+# A stale pid (the conductor already exited) is just a stopped session.
+printf '999999\n' >"$instances_dir/12345678/pid"
+"$repository_dir/bin/baton" remove 12345678 "$project_dir" >"$test_root/stopped-output" 2>&1 || { sed -n '1,40p' "$test_root/stopped-output"; exit 1; }
+[ ! -e "$instances_dir/12345678" ]
 
 if "$repository_dir/bin/baton" remove ../../ "$project_dir" >"$test_root/traversal-output" 2>&1; then
   exit 1

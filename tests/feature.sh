@@ -8,24 +8,13 @@ gh_state="$test_root/gh"
 mkdir -p "$stub_dir" "$gh_state"
 
 cleanup() {
-  local pid_file
-  for pid_file in "$test_root"/*/.baton/s/*/courier.pid; do
-    [ -f "$pid_file" ] && kill "$(cat "$pid_file")" 2>/dev/null || true
-  done
   rm -rf -- "$test_root"
 }
 trap cleanup EXIT
 
-cat >"$stub_dir/herdr" <<'EOF'
+cat >"$stub_dir/claude" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$HERDR_LOG"
-case "$1 $2" in
-"status --json") printf '{"server":{"status":"running"}}\n' ;;
-"workspace create") printf '{"result":{"workspace":{"workspace_id":"w1"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n' ;;
-"pane split") printf '{"result":{"pane":{"pane_id":"w1:p%s"}}}\n' "$RANDOM" ;;
-"tab get") printf '{"error":{"code":"tab_not_found"}}\n' >&2; exit 1 ;;
-*) printf '{"result":{}}\n' ;;
-esac
+exit 0
 EOF
 cat >"$stub_dir/kata" <<'EOF'
 #!/usr/bin/env bash
@@ -63,17 +52,14 @@ case "$1 $2" in
 "pr ready") echo False >"$state/draft"; echo ready >>"$state/readies" ;;
 esac
 EOF
-chmod +x "$stub_dir/herdr" "$stub_dir/kata" "$stub_dir/gh"
+chmod +x "$stub_dir/claude" "$stub_dir/kata" "$stub_dir/gh"
 
 export PATH="$stub_dir:$PATH"
-export HERDR_LOG="$test_root/herdr.log"
 export KATA_LOG="$test_root/kata.log"
 export GH_STATE="$gh_state"
-export HERDR_ENV=1
 export BATON_WORKTREE_DIR="$test_root/worktrees"
 export HOME="$test_root/home"
 mkdir -p "$HOME"
-unset HERDR_WORKSPACE_ID
 : >"$KATA_LOG"
 
 baton="$repository_dir/bin/baton"
@@ -108,11 +94,11 @@ git -C "$project" config "url.$remote_repo.insteadOf" https://github.com/acme/wi
 
 git -C "$project" config --add "url.$remote_repo.insteadOf" git@gitlab.com:acme/widgets.git
 git -C "$project" remote set-url origin git@gitlab.com:acme/widgets.git
-refuses "$baton" start --yes "$project"
+refuses "$baton" start "$project"
 grep -q "not a GitHub repository" "$output"
 git -C "$project" remote set-url origin https://github.com/acme/widgets.git
 touch "$gh_state/unauthenticated"
-refuses "$baton" start --yes "$project"
+refuses "$baton" start "$project"
 grep -q "not authenticated" "$output"
 rm "$gh_state/unauthenticated"
 [ ! -e "$project/.baton/s" ] || [ -z "$(ls -A "$project/.baton/s")" ]
@@ -130,7 +116,7 @@ grep -q "has none" "$output"
 "$baton" start --yes --base main "$local_repo" >/dev/null 2>&1
 [ "$(cat "$local_repo"/.baton/s/*/workflow)" = worktree ]
 
-"$baton" start --yes "$project" >/dev/null 2>&1
+"$baton" start "$project" >/dev/null 2>&1
 session_dirs=("$project"/.baton/s/*/)
 marker="${session_dirs[0]%/}"
 session_id="$(basename "$marker")"
@@ -141,13 +127,11 @@ session_branch="baton/$session_id"
 [ "$(cat "$marker/remote")" = origin ]
 base_commit="$(cat "$marker/base_commit")"
 
-state_dir="$marker/.dispatch-state"
-mkdir -p "$state_dir" "$marker/reports"
+mkdir -p "$marker/reports"
 printf 'goal1\ni1\n' >"$marker/conductor-run"
 printf '# review\n' >"$marker/reports/review.md"
 
 item() { BATON_MARKER_DIR="$marker" BATON_ROLE="${ROLE:-implementer}" bash "$repository_dir/bin/baton-item" "$@"; }
-handoff() { BATON_MARKER_DIR="$marker" BATON_ROLE="$1" BATON_ROOT="$worktree" bash "$repository_dir/bin/baton-handoff" "${@:2}"; }
 commit_change() {
   printf '%s\n' "$1" >>"$worktree/file.txt"
   git -C "$worktree" add file.txt
@@ -156,6 +140,14 @@ commit_change() {
 
 item publish >"$output"
 grep -q "nothing to publish" "$output"
+
+printf 'goal1\n' >"$marker/proposal"
+refuses item start i1
+grep -q "proposal phase" "$output"
+rm "$marker/proposal"
+
+(cd "$worktree" && env -u BATON_MARKER_DIR bash "$repository_dir/bin/baton-item" status) >"$output"
+grep -q "branch $session_branch" "$output"
 [ ! -e "$gh_state/creates" ]
 
 item start i1 >/dev/null
@@ -179,17 +171,13 @@ refuses item start i2
 grep -q "item i1 has not passed review" "$output"
 
 export ROLE=reviewer
-printf 'i1\n' >"$state_dir/reviewer.item"
-printf 'i1\n' >"$state_dir/build.item"
 refuses item review i1 PASS --commit "$base_commit" --report "$marker/reports/review.md"
 grep -q "completed commit" "$output"
 refuses item review i1 PASS --commit "$first_commit" --report "$marker/reports/missing.md"
 grep -q "does not exist" "$output"
 item review i1 CHANGES --commit "$first_commit" --report "$marker/reports/review.md" --summary "needs a fix" >/dev/null
 grep -q "review: CHANGES" "$KATA_LOG"
-refuses handoff reviewer --status done --route conductor "review.md"
-[ -e "$state_dir/build.item" ]
-[ ! -s "$state_dir/conductor.queue" ] 2>/dev/null || { echo "a refused PASS must not queue anything"; exit 1; }
+refuses item gate i1
 
 ROLE=implementer commit_change two
 refuses env ROLE=reviewer BATON_MARKER_DIR="$marker" BATON_ROLE=reviewer bash "$repository_dir/bin/baton-item" review i1 PASS --commit "$first_commit" --report "$marker/reports/review.md"
@@ -203,23 +191,18 @@ ROLE=reviewer item review i1 PASS --commit "$second_commit" --report "$marker/re
 item verify i1 >/dev/null
 
 printf 'wip\n' >"$worktree/wip.txt"
-refuses handoff reviewer --status done --route conductor "review.md"
-[ -e "$state_dir/build.item" ]
+refuses item gate i1
 rm "$worktree/wip.txt"
 
 commit_change drift
-refuses handoff reviewer --status done --route conductor "review.md"
-[ -e "$state_dir/build.item" ]
 refuses item gate i1
 
 git -C "$worktree" reset -q --hard "$second_commit"
-handoff reviewer --status done --route conductor "review.md"
-[ ! -e "$state_dir/build.item" ]
-grep -q "item i1: review.md" "$state_dir/conductor.queue"
+item gate i1
 
 git -C "$worktree" switch -q -c other-branch
 refuses item gate i1
-refuses "$baton" resume --yes "$session_id" "$project"
+refuses "$baton" resume "$session_id" "$project"
 grep -q "not the session branch" "$output"
 git -C "$worktree" switch -q "$session_branch"
 
@@ -280,11 +263,10 @@ grep -q "not every item" "$output"
 ROLE=implementer commit_change three
 ROLE=implementer item complete i2 "tests pass" >/dev/null
 third_commit="$(git -C "$worktree" rev-parse HEAD)"
-printf 'i2\n' >"$state_dir/reviewer.item"
-printf 'i2\n' >"$state_dir/build.item"
+item status >"$output"
+grep -q "build item: i2" "$output"
 ROLE=reviewer item review i2 PASS --commit "$third_commit" --report "$marker/reports/review.md" >/dev/null
-handoff reviewer --status done --route conductor "review.md"
-[ ! -e "$state_dir/build.item" ]
+item gate i2
 item verify i1 >/dev/null
 item verify i2 >/dev/null
 
@@ -297,8 +279,7 @@ grep -q "finalization: not started" "$output"
 printf 'goal1\ngoal1\n' >"$marker/conductor-run"
 ROLE=conductor item final-start >/dev/null
 [ "$(cat "$marker/final/phase")" = review ]
-printf 'goal1\n' >"$state_dir/reviewer.item"
-refuses handoff reviewer --status done --route conductor "final.md"
+refuses item gate goal1
 
 refuses env ROLE=reviewer BATON_MARKER_DIR="$marker" BATON_ROLE=reviewer bash "$repository_dir/bin/baton-item" final-review PASS --commit "$third_commit" --report "$marker/reports/review.md"
 grep -q "not pushed" "$output"
@@ -314,7 +295,7 @@ refuses item ready
 grep -q "no recorded final PASS" "$output"
 ROLE=reviewer item final-review PASS --commit "$third_commit" --report "$marker/reports/review.md" --summary "feature is complete" >/dev/null
 grep -q "final review: PASS" "$KATA_LOG"
-handoff reviewer --status done --route conductor "final.md"
+item gate goal1
 
 printf '[{"bucket":"pass"},{"bucket":"fail"}]\n' >"$gh_state/checks.json"
 set +e

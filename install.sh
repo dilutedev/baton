@@ -1,25 +1,22 @@
 #!/usr/bin/env bash
 # Idempotent local install: makes scripts executable, adds bin/ to PATH in
-# your shell rc file if it isn't already there, and registers the Stop hook
-# in ~/.claude/settings.json if it isn't already registered.
+# your shell rc file if it isn't already there, and removes the Stop hook
+# older baton releases registered in ~/.claude/settings.json. The role agent
+# definitions are (re)written into ~/.claude/agents/ by every `baton start`.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-chmod +x "$ROOT_DIR/bin/baton" "$ROOT_DIR/bin/baton-msg" "$ROOT_DIR/bin/baton-handoff" "$ROOT_DIR/bin/baton-courier" "$ROOT_DIR/bin/baton-item" "$ROOT_DIR/bin/baton-notify" \
-  "$ROOT_DIR/hooks/baton-dispatch.sh"
+chmod +x "$ROOT_DIR/bin/baton" "$ROOT_DIR/bin/baton-item" "$ROOT_DIR/bin/baton-notify"
 
 if [ ! -f "$ROOT_DIR/baton.conf" ]; then
   cp "$ROOT_DIR/baton.conf.example" "$ROOT_DIR/baton.conf"
   echo "install.sh: created $ROOT_DIR/baton.conf from baton.conf.example - edit it to taste"
 fi
 
-for cmd in herdr kata; do
+for cmd in claude kata; do
   command -v "$cmd" >/dev/null 2>&1 || echo "install.sh: warning - '$cmd' not found on PATH, baton needs it"
 done
-
-for cmd in claude codex omp; do
-  command -v "$cmd" >/dev/null 2>&1 || echo "install.sh: note - '$cmd' not found on PATH; only needed for roles configured to use it (see baton.conf)"
-done
+command -v tmux >/dev/null 2>&1 || echo "install.sh: note - 'tmux' not found on PATH; without it teammates share the conductor's terminal instead of getting their own panes"
 
 rc_file=""
 case "${SHELL:-}" in
@@ -41,38 +38,29 @@ else
 fi
 
 settings_file="$HOME/.claude/settings.json"
-python3 - "$settings_file" "$ROOT_DIR/hooks/baton-dispatch.sh" <<'PYEOF'
-import json, sys, os
+python3 - "$settings_file" <<'PYEOF'
+import json, os, sys
 
-settings_file, stop_hook_cmd = sys.argv[1:]
-data = {}
-if os.path.exists(settings_file):
-    with open(settings_file) as f:
-        data = json.load(f)
-
-hooks = data.setdefault("hooks", {})
-
-def register(event, matcher, hook_cmd):
-    entries = hooks.setdefault(event, [])
-    already = any(
-        h.get("command") == hook_cmd
-        for group in entries
-        for h in group.get("hooks", [])
-    )
-    if already:
-        print(f"install.sh: {settings_file} already runs {hook_cmd} on {event}")
-        return False
-    entries.append({"matcher": matcher, "hooks": [{"type": "command", "command": hook_cmd, "timeout": 10}]})
-    print(f"install.sh: registered {hook_cmd} as a {event} hook in {settings_file}")
-    return True
-
-changed = register("Stop", "", stop_hook_cmd)
-
-if changed:
-    os.makedirs(os.path.dirname(settings_file), exist_ok=True)
+settings_file = sys.argv[1]
+if not os.path.exists(settings_file):
+    sys.exit(0)
+with open(settings_file) as f:
+    data = json.load(f)
+stop_hooks = data.get("hooks", {}).get("Stop") or []
+kept = []
+for group in stop_hooks:
+    hooks = [h for h in group.get("hooks", []) if not h.get("command", "").endswith("hooks/baton-dispatch.sh")]
+    if hooks:
+        kept.append(dict(group, hooks=hooks))
+if kept != stop_hooks:
+    if kept:
+        data["hooks"]["Stop"] = kept
+    else:
+        del data["hooks"]["Stop"]
     with open(settings_file, "w") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
+    print(f"install.sh: removed the old baton Stop hook from {settings_file}")
 PYEOF
 
 echo "install.sh: done. Open a new shell (or source your rc file) and run 'baton start' in a project."

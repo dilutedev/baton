@@ -1,59 +1,30 @@
-# baton configuration: per-role tool/model/effort, plus the window layout.
+# baton configuration.
 #
-# Resolution order per role, most specific wins:
-#   <project>/.baton/config  ->  <role>.<key>
-#   <project>/.baton/config  ->  default.<key>
-#   ~/.baton/baton.conf (or $BATON_CONF) -> <role>.<key>
-#   ~/.baton/baton.conf (or $BATON_CONF) -> default.<key>
-#   built-in fallback: tool=claude, model=sonnet, effort=high
+# Resolution order per key, most specific wins:
+#   <project>/.baton/config  ->  ~/.baton/baton.conf (or $BATON_CONF)  ->  built-in default
 #
-# Roles: conductor, researcher, planner, principal, implementer, reviewer
-# tool:   claude, claude2 (claude on a second account, CLAUDE_CONFIG_DIR=~/.claude-secondary), codex, or omp - which CLI agent runs this role
-# model:  an alias (sonnet, opus, fable) or a full model name for that tool
-# effort: low, medium, high, xhigh, max
+# You don't pick a model per role: the conductor chooses haiku, sonnet or
+# opus for every task it hands a teammate. These settings only set the
+# conductor itself and the limits it works within.
 #
-# Stopping an instance and resuming it later (even under a different tool,
-# model, or effort for a role) doesn't reconnect to that role's old
-# conversation - each launch is a fresh session. Continuity instead comes
-# from what's already durable in the project: the kata backlog and its
-# comment history, plus anything under <project>/.baton/. Point a role at
-# `kata list`/`kata show` and it picks up where the last one left off
-# regardless of which tool ran it before.
-#
-# `layout` is not per-role (it's a window-level tmux setting, so it has no
-# <role>. prefix). One of:
-#   tiled           equal grid, all 6 panes the same size (default)
-#   main-vertical   conductor gets a large pane on the left, the rest sit
-#                   in a narrow column on the right
-#   main-horizontal conductor gets a large pane on top, the rest sit in a
-#                   short row underneath
-# Whatever the layout, tmux's pane zoom (prefix + z) always toggles the
-# focused pane to fullscreen and back - reach for that first if you just
-# want to read one pane without changing the layout for everyone.
-#
-# Check what a directory would actually launch with: baton config [DIR]
+# Check what a directory would launch with: baton config [DIR]
 
-default.tool=claude
-default.model=sonnet
-default.effort=medium
+# The conductor - the session you talk to. It judges approaches and reviews
+# the team's work, so it runs on the strongest model by default.
+conductor.model=opus
+# low, medium, high, xhigh, max
+conductor.effort=medium
 
-conductor.model=sonnet
-conductor.effort=low
+# The most expensive model the conductor may give a teammate: haiku, sonnet
+# or opus. Lower it to cap spending; the conductor then works with what's left.
+worker.max-model=opus
 
-researcher.model=sonnet
-researcher.effort=medium
+# Where teammates appear: auto (own tmux panes when baton runs inside tmux,
+# otherwise inside the conductor's terminal), tmux, iterm2, or in-process.
+teammate-mode=auto
 
-
-planner.model=sonnet
-planner.effort=high
-
-reviewer.model=sonnet
-reviewer.effort=medium
-
-principal.model=opus
-principal.effort=medium
-
-implementer.model=sonnet
-implementer.effort=medium
-
-layout=tiled
+# Claude Code permission mode for the session (teammates start with the
+# conductor's): default, acceptEdits, auto, or plan. Unset uses Claude Code's
+# own default, which asks you to approve edits and commands - teammates'
+# prompts appear in the conductor's terminal.
+# permission-mode=acceptEdits
