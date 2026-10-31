@@ -112,6 +112,8 @@ case "${1:-} ${2:-}" in
 "workspace create") printf '{"result":{"workspace":{"workspace_id":"w1"},"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}\n' ;;
 "tab get") [ ! -e "$HERDR_LOG.closed" ] || { printf '{"error":{"code":"tab_not_found"}}\n' >&2; exit 1; } ;;
 "workspace close") touch "$HERDR_LOG.closed" ;;
+"agent start") [ -z "${HERDR_START_TIMEOUT:-}" ] || { printf '{"error":{"code":"timeout","message":"timed out waiting for agent startup"}}\n'; exit 1; } ;;
+"pane process-info") printf '{"result":{"process_info":{"foreground_process_group_id":42,"foreground_processes":[{"argv0":"%s","pid":42}]}}}\n' "${HERDR_FOREGROUND:-claude}" ;;
 esac
 exit 0
 EOF
@@ -144,6 +146,27 @@ grep -q stopped "$test_root/stop-output"
 grep -qx "workspace close w1" "$HERDR_LOG"
 "$baton" status "$repo" >"$test_root/status-output"
 grep -q "^$(basename "$herdr_marker")  stopped" "$test_root/status-output"
+
+# herdr can time out detecting a conductor that did start. Then the session
+# keeps its workspace; only a conductor that isn't running closes it.
+rm -f "$HERDR_LOG.closed"; : >"$HERDR_LOG"
+HERDR_START_TIMEOUT=1 env -u HERDR_ENV "$baton" start --base main "$repo" >/dev/null 2>&1
+slow_marker="$(ls -dt "$repo"/.baton/s/*/ | head -n 1)"
+slow_marker="${slow_marker%/}"
+! grep -q "^workspace close" "$HERDR_LOG"
+[ "$(cat "$slow_marker/tab_id")" = w1:t1 ]
+"$baton" status "$repo" >"$test_root/status-output"
+grep -q "^$(basename "$slow_marker")  running" "$test_root/status-output"
+"$baton" stop "$(basename "$slow_marker")" "$repo" >/dev/null
+
+rm -f "$HERDR_LOG.closed"; : >"$HERDR_LOG"
+if HERDR_START_TIMEOUT=1 HERDR_FOREGROUND=zsh env -u HERDR_ENV "$baton" start --base main "$repo" >/dev/null 2>&1; then
+  echo "start succeeded although the conductor never ran"
+  exit 1
+fi
+failed_marker="$(ls -dt "$repo"/.baton/s/*/ | head -n 1)"
+grep -qx "workspace close w1" "$HERDR_LOG"
+[ ! -e "${failed_marker%/}/tab_id" ]
 
 printf 'conductor checks passed\n'
 

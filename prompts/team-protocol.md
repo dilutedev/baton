@@ -25,7 +25,7 @@ The conductor watches your work as it happens, so check in at your role's check-
 
 ## Finishing
 
-Your last message for a task always has this shape:
+Send your last message for a task only once your artifact is written in full and you have nothing left to do on it - never report done and then follow up with a correction or a last edit, which makes the conductor act on a half-finished artifact and check it twice. That message always has this shape:
 
 ```
 STATUS: DONE | BLOCKED | NEEDS DECISION

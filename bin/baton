@@ -491,6 +491,22 @@ stop_conductor() {
   fi
 }
 
+# claude_in_pane <pane_id> -> true when Claude Code leads the pane's
+# foreground process group. herdr's `agent start` can time out detecting a
+# conductor that did start; this tells that apart from one that didn't.
+claude_in_pane() {
+  herdr pane process-info --pane "$1" 2>/dev/null | python3 -c '
+import json, os, sys
+try:
+    info = json.load(sys.stdin)["result"]["process_info"]
+except Exception:
+    sys.exit(1)
+leader = info.get("foreground_process_group_id")
+sys.exit(0 if any(p.get("pid") == leader and os.path.basename(p.get("argv0", "")) == "claude"
+                  for p in info.get("foreground_processes", [])) else 1)
+'
+}
+
 # launch_in_herdr <marker_dir> <work_dir> <name> -> opens a herdr workspace
 # for the session with the conductor in its one pane, then switches into
 # herdr. Teammates run inside the conductor's pane: Claude Code only gives
@@ -519,6 +535,10 @@ launch_in_herdr() {
     if [ "$(json_get "$start_json" error.code)" = "agent_pane_busy" ] && [ "$attempt" -lt 15 ]; then
       sleep 1
       continue
+    fi
+    if [ "$(json_get "$start_json" error.code)" = "timeout" ] && claude_in_pane "$pane_id"; then
+      echo "baton: herdr didn't confirm the conductor's startup in time, but it is running" >&2
+      break
     fi
     echo "$start_json" >&2
     herdr workspace close "$workspace_id" >/dev/null 2>&1 || true
