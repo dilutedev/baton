@@ -23,7 +23,7 @@ your decision, so you don't have to review everything yourself.
  haiku/sonnet  sonnet    opus/sonnet   sonnet (opus)  sonnet/opus
  root cause   scope      proposal,     builds, checks   independent
               questions  design,       in at plan,      verdict
-                         advice        progress, commit
+                         advice        commit
 ```
 
 Every goal starts with a [proposal phase](#the-proposal-phase): the team
@@ -101,10 +101,14 @@ Teammates don't run hands-free:
 - **The principal** checks its direction with the conductor before writing,
   and is the conductor's colleague for hard calls: the conductor consults it,
   debates it, then decides.
-- **The implementer** sends its plan and waits for a "go", sends a progress
-  note after each chunk (the conductor reads the diff and corrects it as it
-  goes: "this doesn't follow the error-handling pattern in `src/lib/result.ts`"),
-  and waits again before committing.
+- **The implementer** sends its plan and waits for a "go", and waits again
+  before committing with its diff stat, verification results and deviations.
+  The conductor corrects it at either point ("this doesn't follow the
+  error-handling pattern in `src/lib/result.ts`").
+- **The conductor never reads code itself.** When a claim or a change needs
+  checking, a checker teammate on Haiku (Sonnet when it takes judgement) reads
+  the code and answers in three lines, so diffs never fill the conductor's
+  context.
 - **The reviewer** reviews independently, and the conductor challenges a
   verdict that isn't backed by evidence.
 
@@ -117,9 +121,13 @@ also load `CLAUDE.md` themselves, like any Claude Code session.
 
 ### It watches the cost
 
-Cheap models for mechanical work, warm teammates reused rather than respawned,
-paths passed instead of documents pasted, a cap on review rounds, and
-teammates shut down when their item closes. Every stop report includes the
+Every conductor turn re-reads its whole context at Opus prices, so the
+conductor takes as few turns as it can and keeps code out of its context:
+teammates message it only at check-ins or with a question, idle notices get no
+reply, and code is read by cheap checkers. Beyond that: cheap models for
+mechanical work, warm teammates reused rather than respawned, paths passed
+instead of documents pasted, a cap on review rounds, and teammates shut down
+when their item closes. Every stop report includes the
 session's token use, and `baton cost` shows it at any time.
 
 ### The roles
@@ -428,7 +436,7 @@ and never launch real agents or touch GitHub.
 - Agent teams are an experimental Claude Code feature; baton inherits its
   limits (no teammate resumption, one team per session, teammates can't spawn
   teammates).
-- The conductor supervises through check-ins, the diff and the team mailbox.
+- The conductor supervises through check-ins, checkers and the team mailbox.
   It sees what teammates report and what lands in the worktree, not every
   keystroke.
 - Each teammate is its own Claude Code session, so a team costs more tokens

@@ -47,6 +47,10 @@ There is no diff and nothing to record with `baton-item`. Read the proposal and 
 
 Classify findings as above, end with `Critique: <n> blocker, <n> important, <n> optional`, and write it to `$BATON_MARKER_DIR/docs/goal/proposal-critique.md`.
 
+## Spot checks
+
+When the conductor names you `checker-<item>`, you answer one narrow question about the code (does this change follow the design, is this claim true, what does this file do) so the conductor doesn't have to read the code. Read only the paths or commit range it names and what it says to check against. Reply in at most three lines: `OK`, or each problem with `path:line` and the evidence. No review file, no `baton-item`, no finishing-message template, and no verdict on the whole item - that is the item's reviewer's job.
+
 ## Check-ins
 
 - **Early blocker:** message the conductor as soon as you find a BLOCKER that makes the rest of the review moot (wrong item, wrong commit, missing whole step), instead of finishing a review nobody will use.

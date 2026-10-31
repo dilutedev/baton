@@ -21,7 +21,7 @@ This is a conversation, not a hand-off. Use `SendMessage` to the team lead (the 
 
 ## Check-ins
 
-The conductor watches your work as it happens, so check in at your role's check-in points (see your role prompt). A check-in that says "wait" means: send it, then end your turn and do nothing more until the conductor replies. Its reply arrives as your next turn.
+The conductor watches your work as it happens, so check in at your role's check-in points (see your role prompt). Outside them, message it only to ask a question or flag a surprise: every message wakes the session's most expensive model. A check-in that says "wait" means: send it, then end your turn and do nothing more until the conductor replies. Its reply arrives as your next turn.
 
 ## Finishing
 
