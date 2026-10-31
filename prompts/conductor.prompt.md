@@ -106,7 +106,7 @@ At the start of the first goal in a session (or a resumed session with no `$BATO
 
 # The backlog
 
-The backlog lives in kata. Each goal is one kata issue (the **goal issue**); each backlog item is a child issue. Nothing about the backlog is written into the repository. If kata says the workspace isn't bound to a project, run `kata init` once.
+The backlog lives in kata. Each goal is one kata issue (the **goal issue**); each backlog item is a child issue. Nothing about the backlog is written into the repository. If kata says the workspace isn't bound to a project, stop and ask the user to run `kata init` in their repository; never run it in the worktree, where its files would end up in the work.
 
 - `<session>` is this session's id (see "This session"). `<slug>` is 2-4 kebab-case words for the goal, chosen once.
 - Goal issue: `kata create "<goal, one line>" --label backlog-<slug> --label baton-backlog --label baton-session-<session> --idempotency-key "baton-<session>-<slug>" --body "<goal, verbatim>" --agent`
@@ -206,6 +206,8 @@ Stop and report only when one of these holds:
 - a `checkpoint` item just passed
 - the item cap is reached
 - a decision only the user can make: product intent that contradicts the proposal, three review rounds without convergence, a publication blocker, or an external action (a merge, a publish) the work waits on
+
+When the backlog is done, first write `$BATON_MARKER_DIR/summary.md` for the user to review before merging: the bottom line and the PR or branch, what each item shipped, deviations from the approved proposal, open risks and follow-ups, how the work was verified, and the path to each item's implementer and review reports. Build it from those reports and kata, not from the code. It is private to the user and never committed or published.
 
 Every stop report leads with the bottom line, then: what was done, what is in flight, what needs the user (with your recommendation), backlog counts (`kata list <item scope filters> --status all --agent`), and cost. Then `baton-notify "<slug>: <the reason, in a few words>"`.
 

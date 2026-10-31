@@ -659,9 +659,14 @@ cmd_start() {
     pr_repo="$(require_feature_prerequisites "$dir" "$BASE_REMOTE")" || exit 1
   fi
   allowed_worker_models "$dir" >/dev/null || exit 1
-  git -C "$dir" cat-file -e "$BASE_COMMIT:.kata.toml" 2>/dev/null || {
-    echo "baton: warning - .kata.toml isn't committed at $BASE_REF, so the session worktree won't be bound to your kata project; commit it first or the conductor will run 'kata init' inside the worktree" >&2
-  }
+  local local_kata_binding=0
+  if ! git -C "$dir" cat-file -e "$BASE_COMMIT:.kata.toml" 2>/dev/null; then
+    if [ -f "$dir/.kata.toml" ]; then
+      local_kata_binding=1
+    else
+      echo "baton: warning - $dir has no .kata.toml, so the session worktree won't be bound to your kata project; run 'kata init' in $dir first" >&2
+    fi
+  fi
 
   for role in "${ROLES[@]}" conductor; do
     [ -f "$PROMPT_DIR/$role.prompt.md" ] || {
@@ -676,6 +681,12 @@ cmd_start() {
     mkdir -p "$(dirname "$exclude_file")"
     echo '.baton/' >>"$exclude_file"
     echo "baton: added .baton/ to $exclude_file"
+  fi
+  if [ "$local_kata_binding" = 1 ] && ! git -C "$dir" check-ignore -q .kata.toml; then
+    local kata_exclude_file
+    kata_exclude_file="$(git -C "$dir" rev-parse --path-format=absolute --git-path info/exclude)"
+    echo '.kata.toml' >>"$kata_exclude_file"
+    echo "baton: added .kata.toml to $kata_exclude_file"
   fi
 
   local instance
@@ -695,6 +706,7 @@ cmd_start() {
     exit 1
   }
   worktree_path="$(cd "$worktree_path" && pwd -P)"
+  [ "$local_kata_binding" = 0 ] || cp "$dir/.kata.toml" "$worktree_path/.kata.toml"
   echo "$workflow" >"$marker_dir/workflow"
   [ -z "$pr_repo" ] || echo "$pr_repo" >"$marker_dir/pr_repo"
   echo "$session_branch" >"$marker_dir/session_branch"

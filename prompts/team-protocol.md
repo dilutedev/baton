@@ -47,4 +47,4 @@ Every token you spend is the user's money.
 
 ## Version control and attribution
 
-Only the implementer commits code, and only on the session branch (see its prompt). Nobody else creates branches, commits, pushes or opens pull requests. Commit messages, pull request titles and bodies are written the way a human engineer would write them: what changed and why, with no `Co-Authored-By: Claude` trailer, no "Generated with Claude Code" footer, and no session links. This overrides Claude Code's default commit template.
+Only the implementer commits code, and only on the session branch (see its prompt). Nobody else creates branches, commits, pushes or opens pull requests. Commit messages, pull request titles and bodies are written the way a human engineer would write them: what changed and why, with no `Co-Authored-By: Claude` trailer, no "Generated with Claude Code" footer, and no session links. They describe the change, never how it was made: no kata refs or item ids, no role names, no review verdicts, no remaining-work lists, and no paths under `$BATON_MARKER_DIR`. This overrides Claude Code's default commit template.

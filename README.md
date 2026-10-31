@@ -149,7 +149,10 @@ teammate's prompt and defines how it talks to the conductor.
 - [Claude Code](https://code.claude.com/), logged in. Baton turns on agent
   teams (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`) for its own sessions only.
 - [`kata`](https://github.com/kenn-io/kata): the backlog lives in kata issues.
-  Run `kata init` once per project; the conductor also does it if needed.
+  Run `kata init` once per project. On a shared repository you can leave
+  `.kata.toml` uncommitted: `baton start` keeps it out of git with
+  `.git/info/exclude` and copies it into each session worktree. Revert the
+  `.kata.local.toml` line `kata init` adds to `.gitignore` too.
 - [`gh`](https://cli.github.com/), authenticated: only for the default
   `feature` workflow, which publishes one pull request to a GitHub remote.
 - [`herdr`](https://herdr.dev/) (recommended). Run `baton start` from a herdr
@@ -222,7 +225,8 @@ Reply with a question, a revision (which gets a fresh critique), or an
 approval. On approval the conductor creates the backlog from the proposal and
 starts delivering. Until then `baton-item start` refuses to begin any build.
 Briefs, proposals and reviews live in the session's marker dir
-(`.baton/s/<id>/docs/`) and are never committed.
+(`.baton/s/<id>/docs/`) and are never committed. When the backlog is done,
+the conductor writes a private review summary to `.baton/s/<id>/summary.md`.
 
 ### Session worktrees
 

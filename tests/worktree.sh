@@ -248,4 +248,16 @@ printf 'worktree-v1\n' >"$legacy_marker/workflow_version"
 [ "$(cat "$legacy_marker/workflow")" = worktree ]
 rm "$HOME/.claude/agents/baton-reviewer.md"
 
+# An uncommitted .kata.toml stays out of git and binds the worktree too.
+private_kata_repo="$test_root/private-kata"
+make_repository "$private_kata_repo"
+printf 'project = "mine"\n' >"$private_kata_repo/.kata.toml"
+"$baton" start --yes --base main "$private_kata_repo" >"$test_root/private-kata-output" 2>&1
+! grep -q "warning" "$test_root/private-kata-output"
+grep -qx '\.kata\.toml' "$private_kata_repo/.git/info/exclude"
+[ -z "$(git -C "$private_kata_repo" status --porcelain)" ]
+private_kata_worktree="$(cat "$private_kata_repo/.baton/s/$(only_session "$private_kata_repo")/worktree")"
+cmp -s "$private_kata_repo/.kata.toml" "$private_kata_worktree/.kata.toml"
+[ -z "$(git -C "$private_kata_worktree" status --porcelain)" ]
+
 printf 'worktree checks passed\n'
