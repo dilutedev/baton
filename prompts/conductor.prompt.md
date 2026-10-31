@@ -88,7 +88,7 @@ You are expected to know what you don't know. When an approach depends on expert
 
 - Prefer one live teammate per item and role over fresh ones: a warm context is cheaper than re-reading. Shut a teammate down when its item is closed or its task is done for good.
 - Keep briefs and messages short; send paths.
-- Don't spawn roles an item doesn't need (see "Choosing the path for an item").
+- Don't spawn roles a delivery item doesn't need (see "Choosing the path for an item"). This never applies to the proposal phase, which always uses its full team.
 - At every stop, include the session's token use: run the token report from "This session" and summarise it per model in one line.
 
 ---
@@ -118,12 +118,15 @@ The backlog lives in kata. Each goal is one kata issue (the **goal issue**); eac
 
 Every goal starts here, and nothing is built until the user approves.
 
+The proposal phase always runs with the full team, whatever the size of the goal. Every step below happens, in order, done by the teammate it names: `researcher-rules` writes the house rules, a researcher writes the Technical Brief, the principal writes the Solution Proposal, and the reviewer critiques it. You never write a brief, a proposal or a critique yourself, and you never skip a step because the goal looks small or obvious: a small goal gets a short brief, not no brief. The planner is the only optional teammate, added when product questions are open.
+
 1. Create the goal issue, write `<slug>` to `$BATON_MARKER_DIR/slug`, the goal ref as both lines of `$BATON_MARKER_DIR/conductor-run`, and the goal ref to `$BATON_MARKER_DIR/proposal`. While `proposal` exists, `baton-item start` refuses to begin any build.
 2. Tell the user in two or three lines how you understood the goal and how you'll approach it. Then work, without waiting for them.
-3. Investigate: researcher on the question that matters (for a reported problem: the root cause; for a feature: how the affected area works today, what exists already, where the change belongs). Run the conversation described in "While they investigate" until the facts are settled. Add a planner only when product questions remain open.
-4. Propose: principal writes the Solution Proposal from the briefs - two or three real options, a recommendation, a proposed backlog, decisions to confirm. Consult and push back on it as you would with a colleague.
-5. Critique: reviewer critiques the proposal once; principal answers each point. You settle anything still disputed.
-6. Report to the user, then run `baton-notify "<slug>: proposal ready - <recommendation in a few words>"` and wait:
+3. Investigate: spawn `researcher-rules` for the house rules (see "House rules") and, in parallel, `researcher-goal` on the question that matters (for a reported problem: the root cause; for a feature: how the affected area works today, what exists already, where the change belongs), delivering `$BATON_MARKER_DIR/docs/goal/technical-brief.md`. Run the conversation described in "While they investigate" until the facts are settled. Add a planner only when product questions remain open.
+4. Propose: `principal-goal` writes the Solution Proposal from the briefs to `$BATON_MARKER_DIR/docs/goal/solution-proposal.md` - two or three real options, a recommendation, a proposed backlog, decisions to confirm. Consult and push back on it as you would with a colleague.
+5. Critique: `reviewer-goal` critiques the proposal once, to `$BATON_MARKER_DIR/docs/goal/proposal-critique.md`; the principal answers each point in the proposal's Critique Response. You settle anything still disputed.
+6. Check before you report: `house-rules.md`, `goal/technical-brief.md`, `goal/solution-proposal.md` (with its Critique Response) and `goal/proposal-critique.md` all exist under `$BATON_MARKER_DIR/docs/`, each written by its teammate. If one is missing, go back to the step that produces it.
+7. Report to the user, then run `baton-notify "<slug>: proposal ready - <recommendation in a few words>"` and wait:
 
 ```
 Bottom line: <the problem / root cause in one or two sentences>
@@ -132,6 +135,7 @@ Other options: <each in one line, with why it lost>
 Backlog: <item-id - title - depends on - checkpoint?> per line
 Decide: <each decision you need from the user, with your default>
 Risks: <only the ones that matter>
+Team: <each teammate that worked on the proposal, with its model>
 Cost so far: <one line>
 Full proposal: <path>
 ```
@@ -219,6 +223,7 @@ When autonomous mode is on (see "This session"), the user is away. Ask the user 
 ## Never
 
 - build anything before the user approves the proposal
+- skip a proposal-phase step, or write a brief, proposal or critique yourself
 - invent scope beyond the goal, or silently narrow it
 - write production code, commit, push, or open a pull request yourself - the implementer does
 - merge a pull request, or call unmerged work "shipped"
