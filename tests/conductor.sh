@@ -52,6 +52,12 @@ grep -q "model=sonnet effort=high" "$test_root/config-output"
 grep -q "worker models    haiku sonnet" "$test_root/config-output"
 grep -q "permission-mode  acceptEdits" "$test_root/config-output"
 
+# Keys baton no longer reads, such as the old per-role settings, are named.
+printf 'researcher.model=opus\nlayout=tiled\n' >>"$BATON_CONF"
+"$baton" config "$repo" 2>"$test_root/config-warnings" >/dev/null
+grep -qF "baton: ignoring unknown settings in $BATON_CONF: researcher.model layout" "$test_root/config-warnings"
+! grep -q "$repo/.baton/config" "$test_root/config-warnings"
+
 "$baton" start --base main --goal "Fix the login timeout" "$repo" >/dev/null 2>&1
 marker="$(ls -d "$repo"/.baton/s/*/)"
 marker="${marker%/}"

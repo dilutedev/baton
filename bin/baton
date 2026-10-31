@@ -274,6 +274,24 @@ resolve_setting() {
   esac
 }
 
+# warn_unknown_settings <dir> -> names the keys in $GLOBAL_CONF and
+# DIR/.baton/config that baton doesn't read (such as the per-role settings
+# of older releases), which would otherwise be ignored silently.
+warn_unknown_settings() {
+  local file key unknown
+  for file in "$GLOBAL_CONF" "$1/.baton/config"; do
+    [ -f "$file" ] || continue
+    unknown=()
+    for key in $(grep -E '^[[:space:]]*[^#[:space:]][^=]*=' "$file" | sed -E 's/^[[:space:]]*//; s/[[:space:]]*=.*//'); do
+      case "$key" in
+      conductor.model | conductor.effort | worker.max-model | teammate-mode | permission-mode) ;;
+      *) unknown+=("$key") ;;
+      esac
+    done
+    [ "${#unknown[@]}" -eq 0 ] || echo "baton: ignoring unknown settings in $file: ${unknown[*]} - see baton.conf.example" >&2
+  done
+}
+
 # model_tier <model> -> its index in MODEL_TIERS, or nothing for a model
 # baton doesn't rank.
 model_tier() {
@@ -521,6 +539,7 @@ launch_conductor() {
   local dir="$1" marker_dir="$2" work_dir="$3" message="${4:-}" prompt_file name permission
   # Called from `cmd || handler` contexts, where errexit is off, so every
   # step checks its own failure before the exec.
+  warn_unknown_settings "$dir"
   prepare_profile "$work_dir" || return 1
   install_agents || return 1
   prompt_file="$(write_conductor_prompt "$dir" "$marker_dir" "$work_dir")" || return 1
@@ -1045,6 +1064,7 @@ cmd_update() {
 cmd_config() {
   local dir="${1:-.}" role
   dir="$(cd "$dir" && pwd)"
+  warn_unknown_settings "$dir"
   printf 'conductor        model=%s effort=%s\n' "$(resolve_setting "$dir" conductor.model)" "$(resolve_setting "$dir" conductor.effort)"
   printf 'worker models    %s (the conductor picks one per task)\n' "$(allowed_worker_models "$dir" || echo invalid)"
   for role in "${ROLES[@]}"; do

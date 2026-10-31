@@ -3,6 +3,7 @@ set -euo pipefail
 
 repository_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 test_root="$(mktemp -d)"
+export BATON_CONF="$test_root/baton.conf"
 stub_dir="$test_root/stubs"
 mkdir -p "$stub_dir"
 

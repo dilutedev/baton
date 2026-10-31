@@ -3,6 +3,7 @@ set -euo pipefail
 
 repository_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 test_root="$(mktemp -d)"
+export BATON_CONF="$test_root/baton.conf"
 conductor_pid=""
 cleanup() {
   [ -z "$conductor_pid" ] || kill "$conductor_pid" 2>/dev/null || true
