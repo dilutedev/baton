@@ -30,3 +30,8 @@ teammate-mode=in-process
 # own default, which asks you to approve edits and commands - teammates'
 # prompts appear in the conductor's terminal.
 # permission-mode=acceptEdits
+
+# Claude Code accounts for `baton start/resume --alias NAME`: NAME runs Claude
+# Code with CLAUDE_CONFIG_DIR set to PATH. The alias is saved per directory;
+# without one, sessions run on plain claude.
+# alias.claude2=~/.claude-secondary

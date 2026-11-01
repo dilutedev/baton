@@ -192,11 +192,12 @@ with until you `baton stop` and `baton resume` it.
 ## Usage
 
 ```
-baton start [--base BRANCH] [--workflow|-w feature|worktree] [--think] [--goal TEXT] [DIR]
+baton start [--base BRANCH] [--workflow|-w feature|worktree] [--think] [--goal TEXT] [--alias NAME] [DIR]
                              Start a session for DIR (default: cwd) in its own git worktree
                              and open the conductor (in this herdr pane, or a new herdr workspace)
 baton status [DIR]           List every session for DIR, running or stopped
-baton resume [REF] [DIR]     Reopen a stopped session's conductor
+baton resume [--alias NAME] [REF] [DIR]
+                             Reopen a stopped session's conductor
 baton stop [REF] [DIR]       End a running session's conductor
 baton remove [REF] [DIR]     Stop and delete a session's Baton files and its worktree
 baton cost [REF] [DIR]       Token use of a session, per model
@@ -331,6 +332,23 @@ conductor spawns new ones as it needs them. Continuity comes from what's
 durable: the kata backlog and its comments, the marker dir (briefs, reviews,
 `baton-item` records), and the worktree.
 
+### Claude Code accounts (`--alias`)
+
+To run a session on another Claude Code account, map a name to that
+account's config dir in `baton.conf`:
+
+```
+alias.claude2=~/.claude-secondary
+```
+
+`baton start --alias claude2` (or `--alias=claude2`) then runs the conductor
+with `CLAUDE_CONFIG_DIR` set to it, installs the role agents there and marks
+the worktree trusted there. The alias is saved in `DIR/.baton/alias`, so later
+`start`s and `resume`s in that directory use it too; `--alias claude` goes back
+to plain `claude`, which is also the default when nothing is saved. Because a
+resume is a fresh conversation, a session can switch accounts between
+resumes, and `baton cost` counts the transcripts of every configured alias.
+
 ### `--think`
 
 `baton start --think` makes the run autonomous: during delivery the conductor
@@ -365,6 +383,7 @@ per-project overrides in `DIR/.baton/config`:
 | `worker.max-model` | `opus` | The most expensive model a teammate may get: `haiku`, `sonnet` or `opus` |
 | `teammate-mode` | `in-process` | Where teammates appear: `in-process` runs them inside the conductor's pane. Claude Code's other modes (`auto`, `tmux`, `iterm2`) need tmux or iTerm2, not herdr |
 | `permission-mode` | Claude Code's default | Passed to the conductor's session, and so to its teammates |
+| `alias.NAME` | none | The Claude Code config dir `--alias NAME` runs on (see [Claude Code accounts](#claude-code-accounts---alias)) |
 
 `baton config DIR` shows what a directory resolves to.
 
@@ -431,7 +450,7 @@ The `BATON_MAX_*` and `BATON_THINK` values are read when you run
 
 ## Tests
 
-Plain bash, no framework: `bash tests/<name>.sh` (`conductor`, `feature`,
+Plain bash, no framework: `bash tests/<name>.sh` (`alias`, `conductor`, `feature`,
 `remove`, `status`, `update`, `worktree`). They stub `claude`, `herdr`, `kata` and `gh`,
 and never launch real agents or touch GitHub.
 
