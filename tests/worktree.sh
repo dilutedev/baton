@@ -133,10 +133,12 @@ second_marker="${second_marker%/}"
 [ "$(cat "$second_marker/session_branch")" != "baton/$first_session" ]
 
 (cd "$first_worktree" && "$baton" status) >"$test_root/status-output"
-grep -q "worktree" "$test_root/status-output"
-grep -q "$first_worktree" "$test_root/status-output"
-grep -q "baton/$first_session" "$test_root/status-output"
-grep -q "$(basename "$second_marker")" "$test_root/status-output"
+grep -q "^$first_session " "$test_root/status-output"
+grep -q "^$(basename "$second_marker") " "$test_root/status-output"
+(cd "$first_worktree" && "$baton" status "$first_session") >"$test_root/status-detail"
+grep -q "worktree" "$test_root/status-detail"
+grep -q "$first_worktree" "$test_root/status-detail"
+grep -q "baton/$first_session" "$test_root/status-detail"
 
 printf 'dirty\n' >>"$first_worktree/file.txt"
 if "$baton" remove "$first_session" "$local_repo" >"$test_root/dirty-output" 2>&1; then

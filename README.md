@@ -202,7 +202,8 @@ with until you `baton stop` and `baton resume` it.
 baton start [--base BRANCH] [--workflow|-w feature|worktree] [--think] [--goal TEXT] [--alias NAME] [DIR]
                              Start a session for DIR (default: cwd) in its own git worktree
                              and open the conductor (in this herdr pane, or a new herdr workspace)
-baton status [DIR]           List every session for DIR, running or stopped
+baton status [REF] [DIR]     List every session for DIR, running or stopped;
+                             with REF, show that session in full
 baton resume [--alias NAME] [REF] [DIR]
                              Reopen a stopped session's conductor
 baton stop [REF] [DIR]       End a running session's conductor
@@ -407,7 +408,19 @@ The backlog lives in [kata](https://github.com/kenn-io/kata):
   closed is done. Only the conductor claims, comments decisions on, and closes
   items.
 
-`baton status` summarises each session's backlog. If `BATON_MAX_ITEMS` is set,
+`baton status` lists one line per session, running sessions first, then the
+most recently active:
+
+```
+SESSION   STATE    GOAL                PROGRESS  PR    ACTIVE
+9c191f0d  running  retire-mux-webhook  3/5       #142  2m ago
+f9b8a6b9  stopped  root-cause-stall    proposal  -     3d ago
+```
+
+`PROGRESS` is closed/total backlog items, or `proposal` until you approve one.
+`ACTIVE` is the last time baton wrote to the session's marker dir.
+`baton status <id|slug>` shows one session in full: workflow, branch,
+worktree, pull request and every backlog item. If `BATON_MAX_ITEMS` is set,
 the conductor stops after that many items.
 
 ## How it works

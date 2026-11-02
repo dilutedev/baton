@@ -42,7 +42,8 @@ Usage:
                                        Start a new session for DIR (default: cwd) in its own git worktree,
                                        branched from BASE (default: the remote's default branch), and
                                        open the conductor (in this herdr pane, or a new herdr workspace)
-  baton status [DIR]                   List every session for DIR, running or stopped
+  baton status [REF] [DIR]             List every session for DIR, running or stopped;
+                                       with REF, show that session in full
   baton resume [--alias NAME] [REF] [DIR]
                                        Reopen a stopped session's conductor (fresh conversation, same session)
   baton stop [REF] [DIR]               End a running session's conductor
@@ -960,6 +961,14 @@ instance_state_sgr() {
   esac
 }
 
+# backlog_json <dir> <slug> <session> -> `kata list --json` for the run's
+# backlog items, or nothing when kata is missing or fails.
+backlog_json() {
+  local dir="$1" slug="$2" session="$3"
+  command -v kata >/dev/null 2>&1 || return 0
+  (cd "$dir" && kata list --label "backlog-$slug" --label "baton-session-$session" --no-label baton-backlog --status all --json 2>/dev/null) || true
+}
+
 # render_backlog <dir> <slug> <session> -> the run's backlog items, one per line as
 # "[x] <short_id>  <title>" (closed vs open), indented for cmd_status. Reads
 # `kata list --json` rather than the `--agent` key=value text (open=…
@@ -971,8 +980,7 @@ render_backlog() {
   if use_color; then
     color_flag="1"
   fi
-  command -v kata >/dev/null 2>&1 || return 0
-  json="$(cd "$dir" && kata list --label "backlog-$slug" --label "baton-session-$session" --no-label baton-backlog --status all --json 2>/dev/null || true)"
+  json="$(backlog_json "$dir" "$slug" "$session")"
   [ -n "$json" ] || return 0
   python3 -c '
 import json, sys
@@ -999,47 +1007,142 @@ for item in issues:
 ' "$json" "$color_flag"
 }
 
-cmd_status() {
-  local dir="${1:-.}"
-  dir="$(main_checkout_root "$(cd "$dir" && pwd)")"
+# backlog_progress <dir> <slug> <session> -> "<closed>/<total>", or nothing
+# when the run has no backlog items yet.
+backlog_progress() {
+  python3 -c '
+import json, sys
 
-  local base="$dir/.baton/s"
-  local d uuid slug state found=0
-  if [ -d "$base" ]; then
-    for d in "$base"/*/; do
-      [ -d "$d" ] || continue
-      found=1
-      uuid="$(basename "$d")"
-      slug="(no goal yet)"
-      if [ -f "$d/slug" ]; then
-        slug="$(cat "$d/slug")"
-      fi
-      state="stopped"
-      if instance_running "${d%/}"; then
-        state="running"
-      fi
+try:
+    issues = json.loads(sys.argv[1]).get("issues", [])
+except Exception:
+    sys.exit(0)
 
-      printf '%s  %s  %s\n' "$(paint 1 "$uuid")" "$(paint "$(instance_state_sgr "$state")" "$state")" "$slug"
-      if [ -n "$(session_workflow "$d")" ]; then
-        printf '  workflow %s  branch %s  base %s@%s\n  worktree %s\n' "$(session_workflow "$d")" \
-          "$(cat "$d/session_branch" 2>/dev/null)" "$(cat "$d/base_ref" 2>/dev/null)" \
-          "$(cut -c1-12 "$d/base_commit" 2>/dev/null)" "$(cat "$d/worktree" 2>/dev/null)"
-        if [ "$(session_workflow "$d")" = "feature" ]; then
-          printf '  pull request %s' "$(cat "$d/pr_url" 2>/dev/null || echo none)"
-          [ ! -f "$d/final/phase" ] || printf '  finalization %s' "$(cat "$d/final/phase")"
-          echo
-        fi
-      fi
-      [ ! -f "$d/proposal" ] || echo "  proposal phase: waiting for the proposal or your approval"
+if issues:
+    print(str(sum(1 for item in issues if item.get("status") == "closed")) + "/" + str(len(issues)))
+' "$(backlog_json "$1" "$2" "$3")"
+}
 
-      if [ -f "$d/slug" ]; then
-        render_backlog "$dir" "$slug" "$uuid"
-      fi
-      echo
-    done
+session_state() {
+  if instance_running "$1"; then
+    echo running
+  else
+    echo stopped
   fi
+}
 
-  [ "$found" = "1" ] || echo "baton: no instances for $dir"
+session_slug() {
+  cat "$1/slug" 2>/dev/null || echo "(no goal yet)"
+}
+
+# render_session_table <dir> -> one line per session: running first, then the
+# most recently active. ACTIVE is the newest file change in the marker dir,
+# which baton and its tools write as the session works.
+render_session_table() {
+  local dir="$1" color_flag="0" d uuid slug progress pull_request
+  if use_color; then
+    color_flag="1"
+  fi
+  for d in "$dir/.baton/s"/*/; do
+    [ -d "$d" ] || continue
+    d="${d%/}"
+    session_workflow "$d" >/dev/null
+    uuid="$(basename "$d")"
+    slug="$(session_slug "$d")"
+    progress="-"
+    if [ -f "$d/proposal" ]; then
+      progress="proposal"
+    elif [ -f "$d/slug" ]; then
+      progress="$(backlog_progress "$dir" "$slug" "$uuid" | grep . || echo -)"
+    fi
+    pull_request="$(sed -nE 's#.*/pull/([0-9]+).*#\#\1#p' "$d/pr_url" 2>/dev/null | grep . || echo -)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$uuid" "$(session_state "$d")" "$slug" "$progress" "$pull_request" "$d"
+  done | python3 -c '
+import os, sys, time
+
+color = sys.argv[1] == "1"
+
+def last_active(marker_dir):
+    newest = 0
+    for root, _, files in os.walk(marker_dir):
+        for name in files:
+            newest = max(newest, os.path.getmtime(os.path.join(root, name)))
+    return newest or os.path.getmtime(marker_dir)
+
+def age(seconds):
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return str(int(seconds // 60)) + "m ago"
+    if seconds < 86400:
+        return str(int(seconds // 3600)) + "h ago"
+    return str(int(seconds // 86400)) + "d ago"
+
+sessions = []
+for line in sys.stdin:
+    uuid, state, slug, progress, pull_request, marker_dir = line.rstrip("\n").split("\t")
+    sessions.append((uuid, state, slug, progress, pull_request, last_active(marker_dir)))
+sessions.sort(key=lambda session: (session[1] != "running", -session[5]))
+
+now = time.time()
+rows = [("SESSION", "STATE", "GOAL", "PROGRESS", "PR", "ACTIVE")]
+rows += [session[:5] + (age(now - session[5]),) for session in sessions]
+widths = [max(len(row[column]) for row in rows) for column in range(6)]
+
+def paint(code, text):
+    return "\033[" + code + "m" + text + "\033[0m" if color and code else text
+
+for index, row in enumerate(rows):
+    if index == 0:
+        codes = ["1"] * 6
+    else:
+        codes = ["1", "32" if row[1] == "running" else "90", "", "", "", "90"]
+    cells = [paint(codes[column], row[column].ljust(widths[column]) if column < 5 else row[column]) for column in range(6)]
+    print("  ".join(cells))
+' "$color_flag"
+}
+
+# render_session_detail <dir> <marker_dir> -> everything baton knows about one
+# session: workflow, branch, worktree, pull request, phase and backlog.
+render_session_detail() {
+  local dir="$1" d="$2" uuid slug state
+  uuid="$(basename "$d")"
+  slug="$(session_slug "$d")"
+  state="$(session_state "$d")"
+
+  printf '%s  %s  %s\n' "$(paint 1 "$uuid")" "$(paint "$(instance_state_sgr "$state")" "$state")" "$slug"
+  if [ -n "$(session_workflow "$d")" ]; then
+    printf '  workflow %s  branch %s  base %s@%s\n  worktree %s\n' "$(session_workflow "$d")" \
+      "$(cat "$d/session_branch" 2>/dev/null)" "$(cat "$d/base_ref" 2>/dev/null)" \
+      "$(cut -c1-12 "$d/base_commit" 2>/dev/null)" "$(cat "$d/worktree" 2>/dev/null)"
+    if [ "$(session_workflow "$d")" = "feature" ]; then
+      printf '  pull request %s' "$(cat "$d/pr_url" 2>/dev/null || echo none)"
+      [ ! -f "$d/final/phase" ] || printf '  finalization %s' "$(cat "$d/final/phase")"
+      echo
+    fi
+  fi
+  [ ! -f "$d/proposal" ] || echo "  proposal phase: waiting for the proposal or your approval"
+
+  if [ -f "$d/slug" ]; then
+    render_backlog "$dir" "$slug" "$uuid"
+  fi
+}
+
+# cmd_status [REF] [DIR] -> the session table for DIR, or with REF, that one
+# session in full.
+cmd_status() {
+  parse_ref_dir_args "$@"
+  if [ -n "$REF" ]; then
+    local instance
+    instance="$(resolve_instance "$DIR" "$REF")" || exit 1
+    render_session_detail "$DIR" "$DIR/.baton/s/$instance"
+    return 0
+  fi
+  if ! ls -d "$DIR/.baton/s"/*/ >/dev/null 2>&1; then
+    echo "baton: no instances for $DIR"
+    return 0
+  fi
+  render_session_table "$DIR"
 }
 
 # cmd_cost [REF] [DIR] -> the session's token use per model, summed from
