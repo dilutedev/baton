@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/02-reversed-lockup.svg">
+    <img alt="baton" src="assets/logo/01-primary-lockup.svg" width="560">
+  </picture>
+</p>
+
 # baton
 
 Talk to one Claude Code agent, the **conductor**, and let it run a team of
@@ -421,8 +428,10 @@ the conductor stops after that many items.
   workflow and refuses steps that would break it. Teammates find the session
   through `BATON_MARKER_DIR` or, when their shell lacks it, a pointer baton
   writes into the worktree's git dir.
-- `baton-notify` shows a desktop notification (macOS or `notify-send`) when
-  the conductor needs you.
+- `baton-notify` shows a desktop notification with the baton icon when the
+  conductor needs you: `notify-send` on Linux, `terminal-notifier` on macOS.
+  Without `terminal-notifier` (`brew install terminal-notifier`) macOS still
+  notifies through `osascript`, but without the icon.
 - `baton cost` sums token use per model from the Claude Code transcripts of
   every session that ran in the worktree, the conductor and its teammates
   alike.
@@ -451,7 +460,7 @@ The `BATON_MAX_*` and `BATON_THINK` values are read when you run
 ## Tests
 
 Plain bash, no framework: `bash tests/<name>.sh` (`alias`, `conductor`, `feature`,
-`remove`, `status`, `update`, `worktree`). They stub `claude`, `herdr`, `kata` and `gh`,
+`notify`, `remove`, `status`, `update`, `worktree`). They stub `claude`, `herdr`, `kata` and `gh`,
 and never launch real agents or touch GitHub.
 
 ## Limitations

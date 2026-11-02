@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # baton-notify "<text>"
-# Shows a desktop notification - the conductor runs it whenever it stops and
-# needs the user. Where the platform has no way to show one, it rings the
-# terminal bell instead. Never fails the caller.
+# Shows a desktop notification with the baton icon - the conductor runs it
+# whenever it stops and needs the user. On macOS the icon needs
+# terminal-notifier; plain osascript notifications can't carry one. Where the
+# platform has no way to show one, it rings the terminal bell instead. Never
+# fails the caller.
 set -uo pipefail
 
 text="$(echo "$*" | tr '\n\t' '  ' | sed -E 's/[[:space:]]+$//')"
@@ -11,10 +13,14 @@ text="$(echo "$*" | tr '\n\t' '  ' | sed -E 's/[[:space:]]+$//')"
   exit 1
 }
 
-if command -v osascript >/dev/null 2>&1; then
+icon="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/assets/logo/app-icon-transparent.png"
+
+if command -v terminal-notifier >/dev/null 2>&1; then
+  terminal-notifier -title baton -message "$text" -contentImage "$icon" >/dev/null 2>&1
+elif command -v osascript >/dev/null 2>&1; then
   osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "baton"' -e 'end run' "$text" >/dev/null 2>&1
 elif command -v notify-send >/dev/null 2>&1; then
-  notify-send baton "$text" >/dev/null 2>&1
+  notify-send -i "$icon" baton "$text" >/dev/null 2>&1
 else
   printf '\a' >/dev/tty 2>/dev/null
 fi
