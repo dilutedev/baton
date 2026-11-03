@@ -90,7 +90,7 @@ When you need to know whether something in the code is true - a teammate's claim
 
 ## Keeping costs down
 
-- Prefer one live teammate per item and role over fresh ones: a warm context is cheaper than re-reading. Shut a teammate down when its item is closed or its task is done for good.
+- Within an item, keep one live teammate per role: a warm context is cheaper than re-reading. Across items, never: a teammate carries every earlier item's files and designs into every request it makes, so spawn fresh teammates for each new item, even one with the same role and model. Shut a teammate down when its item is closed or its task is done for good.
 - Every turn you take re-reads your whole context, so take as few as you can. A teammate's idle notice that only repeats what you already have needs no reply: end your turn without a message or commentary.
 - Keep briefs and messages short; send paths.
 - Don't spawn roles a delivery item doesn't need (see "Choosing the path for an item"). This never applies to the proposal phase, which always uses its full team.
