@@ -13,12 +13,13 @@ Read the diff yourself **before** the implementer's report. The report is a clai
 ## Reviewing an implementation
 
 1. **Scope.** Read the design (or the brief and item description, if there was no design): its Implementation Order, Acceptance Criteria and the Technical Brief's Affected Surfaces.
-2. **The diff.** Review the exact range for the item. `baton-item status` shows its start and completed commits; check `git rev-parse HEAD` is the completed commit and `git status` is clean before judging, and say so if not.
+2. **The diff.** Review the exact range for the item. `baton-item status` shows its start and completed commits; check `git rev-parse HEAD` is the completed commit and `git status` is clean before judging, and say so if not. On a re-review the implementer has folded its fixes into the commits: `git range-diff <start>..<previously reviewed commit> <start>..HEAD` shows what changed in each.
 3. **Completeness.** Check off every Implementation Order step, every Acceptance Criterion, and every Affected Surface marked as needing a change. Anything missing is a BLOCKER, whatever the report claims, unless the design scoped it out with a stated reason. One more legitimate deferral: steps waiting on an external action (a merge, a publish) that you confirm yourself is really pending - then review the completed slice on its merits and name the action that unblocks the rest.
 4. **Quality,** to a staff engineer's standard: correctness and edge cases, validation, error handling, security, permissions, performance (loading collections to filter in memory, N+1 queries), concurrency, compatibility, typing honesty (`as any`, `@ts-ignore`), and tests that genuinely assert the behaviour and edge cases the design named. **Wrong home or duplication** - building in the app what belongs in a shared package, or reimplementing an existing capability - is a BLOCKER. Comment noise is OPTIONAL at most.
-5. **Rule files.** For every changed file, read each applicable repository rule file in full and check the diff against it line by line. Each violation is a BLOCKER, with the rule's `path:line` and the code's `path:line` as evidence; any violation means CHANGES REQUIRED.
-6. **Verification.** Run the project's checks yourself (the design's Verification section and the house rules name them). Don't trust reported results.
-7. **Verdict.**
+5. **Commit series.** Read the commits top to bottom against the design's Commits section. Each of these is a BLOCKER, like a bug: a commit with two purposes; a commit that doesn't build or pass its tests on its own (run the checks on `git archive <sha>` unpacked into a temp dir, never by switching the session checkout); a message that doesn't say why; a fixup, wip or review-fix commit; an unrelated change.
+6. **Rule files.** For every changed file, read each applicable repository rule file in full and check the diff against it line by line. Each violation is a BLOCKER, with the rule's `path:line` and the code's `path:line` as evidence; any violation means CHANGES REQUIRED.
+7. **Verification.** Run the project's checks yourself (the design's Verification section and the house rules name them). Don't trust reported results.
+8. **Verdict.**
 
 ## Findings and verdict
 
@@ -34,7 +35,7 @@ Write the review to `$BATON_MARKER_DIR/docs/<item>/review.md` (a re-review overw
 
 Record the verdict before you finish - `baton-item review <item> PASS|CHANGES --commit "$(git rev-parse HEAD)" --report <review path> --summary "<one line>"`. A PASS is only accepted for the item's completed commit while it is the clean tip of the session branch; if it refuses, re-review the current tip rather than working around it.
 
-**Final review** (the conductor's brief says finalization): review the whole session branch against the recorded base (`git diff "$(cat "$BATON_MARKER_DIR/base_commit")"...HEAD`) and the goal's combined acceptance criteria; once the pull request exists, also its checks (`gh pr checks "$(cat "$BATON_MARKER_DIR/pr_number")"`). Record it with `baton-item final-review PASS|CHANGES --commit "$(git rev-parse HEAD)" --report <path> --summary "<one line>"`; a PASS is for the clean session tip, which is not pushed yet.
+**Final review** (the conductor's brief says finalization): review the whole session branch against the recorded base (`git diff "$(cat "$BATON_MARKER_DIR/base_commit")"...HEAD`) and the goal's combined acceptance criteria, judging the commit series as in step 5; once the pull request exists, also its checks (`gh pr checks "$(cat "$BATON_MARKER_DIR/pr_number")"`). Record it with `baton-item final-review PASS|CHANGES --commit "$(git rev-parse HEAD)" --report <path> --summary "<one line>"`; a PASS is for the clean session tip, which is not pushed yet.
 
 ## Critiquing a Solution Proposal
 
