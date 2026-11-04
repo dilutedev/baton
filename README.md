@@ -166,6 +166,9 @@ teammate's prompt and defines how it talks to the conductor.
   pane and the conductor opens in that pane; run it anywhere else while herdr's
   server is running and baton opens a herdr workspace for the session. Without
   herdr, the conductor opens in the terminal you started it from.
+- `omp` (oh-my-pi), optional: only for
+  `--backend omp`. With herdr, run `herdr integration install omp` once so
+  herdr tracks omp's turn state.
 - `bash` 3.2+, `git`, `python3`.
 
 ## Install
@@ -199,12 +202,13 @@ with until you `baton stop` and `baton resume` it.
 ## Usage
 
 ```
-baton start [--base BRANCH] [--workflow|-w feature|worktree] [--think] [--goal TEXT] [--alias NAME] [DIR]
+baton start [--base BRANCH] [--workflow|-w feature|worktree] [--think] [--goal TEXT] [--alias NAME]
+            [--backend claude|omp] [DIR]
                              Start a session for DIR (default: cwd) in its own git worktree
                              and open the conductor (in this herdr pane, or a new herdr workspace)
 baton status [REF] [DIR]     List every session for DIR, running or stopped;
                              with REF, show that session in full
-baton resume [--alias NAME] [REF] [DIR]
+baton resume [--alias NAME] [--backend claude|omp] [REF] [DIR]
                              Reopen a stopped session's conductor
 baton stop [REF] [DIR]       End a running session's conductor
 baton remove [REF] [DIR]     Stop and delete a session's Baton files and its worktree
@@ -357,6 +361,25 @@ to plain `claude`, which is also the default when nothing is saved. Because a
 resume is a fresh conversation, a session can switch accounts between
 resumes, and `baton cost` counts the transcripts of every configured alias.
 
+### The omp backend (`--backend`)
+
+`baton start --backend omp` (or `backend=omp` in `baton.conf`) runs the
+conductor and its team on omp (oh-my-pi) instead of
+Claude Code. A session records its backend in `.baton/s/<id>/backend`, and
+`baton resume --backend claude|omp` switches a stopped session to the other
+one; without the flag, resume keeps the session's backend. On omp the tiers map
+to fixed models, and the conductor and `worker.max-model` keep using the tier
+names:
+
+| Tier | omp model |
+|---|---|
+| haiku | `kimi-developer/kimi-k2.6` |
+| sonnet | `kimi-developer/kimi-k2.7-code` |
+| opus | `kimi-developer/kimi-k3` |
+
+`teammate-mode`, `permission-mode` and `--alias` are Claude Code only; `--alias`
+with omp is an error, and a saved alias doesn't affect an omp session.
+
 ### `--think`
 
 `baton start --think` makes the run autonomous: during delivery the conductor
@@ -386,12 +409,13 @@ per-project overrides in `DIR/.baton/config`:
 
 | Key | Default | Meaning |
 |---|---|---|
+| `backend` | `claude` | The agent CLI for new sessions: `claude` or `omp` (see [the omp backend](#the-omp-backend---backend)) |
 | `conductor.model` | `opus` | The conductor's model |
 | `conductor.effort` | `medium` | The conductor's effort: `low` to `max` |
 | `worker.max-model` | `opus` | The most expensive model a teammate may get: `haiku`, `sonnet` or `opus` |
-| `teammate-mode` | `in-process` | Where teammates appear: `in-process` runs them inside the conductor's pane. Claude Code's other modes (`auto`, `tmux`, `iterm2`) need tmux or iTerm2, not herdr |
-| `permission-mode` | Claude Code's default | Passed to the conductor's session, and so to its teammates |
-| `alias.NAME` | none | The Claude Code config dir `--alias NAME` runs on (see [Claude Code accounts](#claude-code-accounts---alias)) |
+| `teammate-mode` | `in-process` | Claude Code only. Where teammates appear: `in-process` runs them inside the conductor's pane. Claude Code's other modes (`auto`, `tmux`, `iterm2`) need tmux or iTerm2, not herdr |
+| `permission-mode` | Claude Code's default | Claude Code only. Passed to the conductor's session, and so to its teammates |
+| `alias.NAME` | none | Claude Code only. The Claude Code config dir `--alias NAME` runs on (see [Claude Code accounts](#claude-code-accounts---alias)) |
 
 `baton config DIR` shows what a directory resolves to.
 
@@ -437,6 +461,13 @@ the conductor stops after that many items.
 - The conductor spawns teammates with the Agent tool from the
   `baton-<role>` definitions, naming the model per task. Messages between
   them use Claude Code's team mailbox, and arrive without polling.
+- On the omp backend, `start` instead writes the role agents to
+  `~/.omp/agent/agents/baton-<role>.md` (each lists all three tier models, the
+  role's default first) and a settings overlay `.baton/s/<id>/omp.yml`, then
+  starts `omp` with `--config`. The conductor spawns teammates with omp's
+  `task` tool and messages them with `write agent://<name>`; the overlay allows
+  per-spawn models up to `worker.max-model` and keeps idle teammates alive for
+  a day instead of omp's 7 minutes.
 - `baton-item` records the commit, review and PR evidence of the feature
   workflow and refuses steps that would break it. Teammates find the session
   through `BATON_MARKER_DIR` or, when their shell lacks it, a pointer baton
@@ -445,9 +476,10 @@ the conductor stops after that many items.
   conductor needs you: `notify-send` on Linux, `terminal-notifier` on macOS.
   Without `terminal-notifier` (`brew install terminal-notifier`) macOS still
   notifies through `osascript`, but without the icon.
-- `baton cost` sums token use per model from the Claude Code transcripts of
-  every session that ran in the worktree, the conductor and its teammates
-  alike.
+- `baton cost` sums token use per model from the Claude Code and omp
+  transcripts of every session that ran in the worktree, the conductor and
+  its teammates alike. omp rows add a dollar cost from omp's own figures;
+  Claude Code rows show tokens only.
 
 ## Environment variables
 
@@ -459,6 +491,8 @@ the conductor stops after that many items.
 | `BATON_CONF` | you (optional) | The global `baton.conf` path |
 | `BATON_AGENTS_DIR` | you (optional) | Where agent definitions are written (default `~/.claude/agents`) |
 | `BATON_CLAUDE` | you (optional) | The Claude Code command (default `claude`) |
+| `BATON_OMP` | you (optional) | The omp command (default `omp`) |
+| `BATON_OMP_AGENTS_DIR` | you (optional) | Where omp agent definitions are written (default `~/.omp/agent/agents`) |
 | `BATON_WORKTREE_DIR` | you (optional) | Where session worktrees are created (default `~/.baton-worktrees`) |
 | `BATON_MAX_ITEMS` | you (optional) | Cap on backlog items per run |
 | `BATON_MAX_IN_FLIGHT` | you (optional) | Backlog items open at once (default 2) |
@@ -473,7 +507,7 @@ The `BATON_MAX_*` and `BATON_THINK` values are read when you run
 ## Tests
 
 Plain bash, no framework: `bash tests/<name>.sh` (`alias`, `conductor`, `feature`,
-`notify`, `remove`, `status`, `update`, `worktree`). They stub `claude`, `herdr`, `kata` and `gh`,
+`notify`, `omp`, `remove`, `status`, `update`, `worktree`). They stub `claude`, `omp`, `herdr`, `kata` and `gh`,
 and never launch real agents or touch GitHub.
 
 ## Limitations
@@ -487,5 +521,6 @@ and never launch real agents or touch GitHub.
 - Each teammate is its own Claude Code session, so a team costs more tokens
   than one session doing everything; the model routing and limits above are
   what keep that in check.
-- Claude Code only. Support for other agent CLIs was removed with the pane
-  runner; it can come back as a separate backend later.
+- Two backends: Claude Code and omp. `--alias` is Claude Code only. `baton
+  cost` covers both, with dollar cost for omp and tokens only for Claude
+  Code. omp's models are the fixed tier map above.

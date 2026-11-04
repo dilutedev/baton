@@ -99,8 +99,8 @@ cat >"$project_dir/s1/subagents/agent-a.jsonl" <<'EOF'
 {"type":"assistant","message":{"id":"m3","model":"claude-haiku-5-5","usage":{"input_tokens":5,"output_tokens":3}}}
 EOF
 "$baton" cost "$repo" >"$test_root/cost-output"
-grep -Eq '^claude-opus-5-5 +1 +10 +100 +1000 +50$' "$test_root/cost-output"
-grep -Eq '^claude-haiku-5-5 +2 +10 +0 +0 +10$' "$test_root/cost-output"
+grep -Eq '^claude-opus-5-5 +1 +10 +100 +1000 +50 +-$' "$test_root/cost-output"
+grep -Eq '^claude-haiku-5-5 +2 +10 +0 +0 +10 +-$' "$test_root/cost-output"
 
 # Outside a herdr pane, with herdr running, the conductor gets its own herdr
 # workspace in the worktree, and stop closes that workspace.

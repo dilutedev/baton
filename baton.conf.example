@@ -9,6 +9,12 @@
 #
 # Check what a directory would launch with: baton config [DIR]
 
+# Which agent CLI runs the conductor and its team: claude or omp (oh-my-pi).
+# `baton start/resume --backend` overrides it, and a session remembers its
+# backend. On omp the models are fixed: haiku is kimi-developer/kimi-k2.6,
+# sonnet kimi-developer/kimi-k2.7-code, opus kimi-developer/kimi-k3.
+backend=claude
+
 # The conductor - the session you talk to. It judges approaches and reviews
 # the team's work, so it runs on the strongest model by default.
 conductor.model=opus
@@ -22,16 +28,16 @@ worker.max-model=opus
 # Where teammates appear. in-process runs them inside the conductor's herdr
 # pane (arrow keys to pick one, Enter to view and message it). Claude Code
 # can only give teammates panes of their own under tmux or iTerm2 (tmux,
-# iterm2, auto), not herdr.
+# iterm2, auto), not herdr. Ignored on omp.
 teammate-mode=in-process
 
 # Claude Code permission mode for the session (teammates start with the
 # conductor's): default, acceptEdits, auto, or plan. Unset uses Claude Code's
 # own default, which asks you to approve edits and commands - teammates'
-# prompts appear in the conductor's terminal.
+# prompts appear in the conductor's terminal. Ignored on omp.
 # permission-mode=acceptEdits
 
 # Claude Code accounts for `baton start/resume --alias NAME`: NAME runs Claude
 # Code with CLAUDE_CONFIG_DIR set to PATH. The alias is saved per directory;
-# without one, sessions run on plain claude.
+# without one, sessions run on plain claude. Not allowed with --backend omp.
 # alias.claude2=~/.claude-secondary

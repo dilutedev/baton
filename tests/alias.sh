@@ -99,7 +99,7 @@ for config_dir in "$HOME/.claude" "$secondary"; do
     "$config_dir" >"$transcript_dir/t.jsonl"
 done
 "$baton" cost "$second_session" "$repo" >"$test_root/cost-output"
-grep -Eq '^claude-opus-5-5 +2 +10 +0 +0 +2$' "$test_root/cost-output"
+grep -Eq '^claude-opus-5-5 +2 +10 +0 +0 +2 +-$' "$test_root/cost-output"
 
 # In a herdr workspace the conductor gets the alias's config dir too.
 cat >"$stub_dir/herdr" <<'EOF'
