@@ -1,21 +1,28 @@
 #!/usr/bin/env bash
 # baton-item <command> ...
-# Records and checks the commit, review and publication evidence of a
-# feature session: every backlog item is committed on the session branch,
-# reviewed at an exact commit, and published to one draft pull request.
+# Records and checks the commit, review, approval and publication evidence of
+# a session: every backlog item is committed on the session branch and
+# reviewed at an exact commit, the final reviewer's PASS on the whole goal is
+# approved by the owner, and only that approved tip is published to one draft
+# pull request. A session without a GitHub remote ends with its branch:
+# publish and ready say there is nowhere to publish.
 #
 #   start <item>                          record the commit the item starts from
 #   complete <item> "<verification>"      record the item's completed commit
-#   publish [--branch NAME] [--title T] [--body B]
-#                                         push the branch, create or reuse the draft PR;
-#                                         --branch renames the session branch before its first push
 #   review <item> PASS|CHANGES --commit SHA --report PATH [--summary TEXT]
 #   verify <item>                         succeed only for a recorded PASS on the completed commit
 #   gate <item>                           the check the conductor runs before it accepts a reviewer PASS
-#   status                                items, publication and finalization state
-#   final-start                           begin whole-feature finalization
+#   status                                items, approval, publication and finalization state
+#   final-start                           begin whole-goal finalization
 #   final-review PASS|CHANGES --commit SHA --report PATH [--summary TEXT]
-#   ready [--wait]                        mark the reviewed draft PR ready once checks pass
+#                                         PASS needs the clean session tip; nothing has to be pushed
+#   approve                               record the owner's approval of the final-reviewed tip
+#   publish [--branch NAME] [--title T] [--body B]
+#                                         push the approved tip, create or reuse the draft PR;
+#                                         --branch renames the session branch before its first push
+#   ready [--wait]                        mark the approved, published draft PR ready once checks pass
+#
+# complete and publish refuse when history already pushed was rewritten.
 set -euo pipefail
 
 fail() {
@@ -31,7 +38,6 @@ if [ -z "${BATON_MARKER_DIR:-}" ]; then
 fi
 [ -n "${BATON_MARKER_DIR:-}" ] || fail "BATON_MARKER_DIR is not set and this isn't a baton session worktree"
 marker_dir="$BATON_MARKER_DIR"
-[ "$(cat "$marker_dir/workflow" 2>/dev/null || true)" = feature ] || fail "this session does not use the feature workflow"
 
 read_marker() { cat "$marker_dir/$1" 2>/dev/null || true; }
 
@@ -121,6 +127,19 @@ published_tip() {
   git_in ls-remote "$remote" "refs/heads/$session_branch" 2>/dev/null | awk '{print $1; exit}'
 }
 
+require_unrewritten_history() {
+  local tip
+  [ -n "$remote" ] || return 0
+  tip="$(published_tip || true)"
+  [ -z "$tip" ] || git_in merge-base --is-ancestor "$tip" HEAD 2>/dev/null ||
+    fail "pushed history was rewritten: the published tip ${tip:0:12} is not an ancestor of HEAD (or the remote has commits this checkout lacks) - fixes after a push are new commits; reconcile with the remote first"
+}
+
+require_owner_approval() {
+  [ "$(final_value approved_commit)" = "$(head_commit)" ] ||
+    fail "the owner has not approved the session tip $(head_commit | cut -c1-12) - the conductor runs 'baton-item approve' only after the owner's ok on the final review"
+}
+
 verify_item() {
   local item="$1" completed reviewed
   completed="$(item_value "$item" completed_commit)"
@@ -172,6 +191,7 @@ cmd_complete() {
   require_clean
   git_in merge-base --is-ancestor "$start" HEAD || fail "the session branch no longer contains item $item's starting commit"
   [ "$(head_commit)" != "$start" ] || fail "item $item has no commit on the session branch yet"
+  require_unrewritten_history
   local dir="$items_dir/$item"
   rm -f "$dir/verdict" "$dir/reviewed_commit" "$dir/review_path"
   record "$dir" completed_commit "$(head_commit)"
@@ -190,12 +210,14 @@ cmd_publish() {
     *) fail "unknown publish option '$1'" ;;
     esac
   done
-  [ -n "$remote" ] && [ -n "$pr_repo" ] || fail "this session has no recorded GitHub remote"
+  [ -n "$remote" ] && [ -n "$pr_repo" ] || fail "this session has no GitHub remote to publish to - the goal ends with the commits on '$session_branch'"
   require_session_branch
   if [ "$(head_commit)" = "$base_commit" ]; then
     echo "the session branch has no commits yet - nothing to publish"
     return 0
   fi
+  require_owner_approval
+  require_unrewritten_history
   if [ -n "$branch" ] && [ "$branch" != "$session_branch" ] && [ -z "$(read_marker pr_number)" ] && [ -z "$(published_tip)" ]; then
     git check-ref-format --branch "$branch" >/dev/null 2>&1 || fail "'$branch' is not a valid branch name"
     git_in branch -m "$session_branch" "$branch" || fail "could not rename '$session_branch' to '$branch'"
@@ -312,7 +334,7 @@ cmd_verify() {
 
 final_evidence() {
   local reviewed
-  [ "$(final_value verdict)" = PASS ] || { echo "the combined feature has no recorded final PASS" >&2; return 1; }
+  [ "$(final_value verdict)" = PASS ] || { echo "the combined goal has no recorded final PASS" >&2; return 1; }
   reviewed="$(final_value reviewed_commit)"
   [ "$reviewed" = "$(head_commit)" ] || { echo "the session branch moved after the final review (${reviewed:0:12} -> $(head_commit | cut -c1-12))" >&2; return 1; }
 }
@@ -352,6 +374,8 @@ cmd_status() {
   done
   if [ -n "$(read_marker pr_number)" ]; then
     echo "pull request: $(read_marker pr_url)"
+  elif [ -z "$pr_repo" ]; then
+    echo "pull request: none (no GitHub remote)"
   else
     echo "pull request: none yet"
   fi
@@ -359,6 +383,15 @@ cmd_status() {
     echo "finalization: $(final_value phase), final review $(final_value verdict)@$(final_value reviewed_commit | cut -c1-12)"
   else
     echo "finalization: not started"
+  fi
+  local approved
+  approved="$(final_value approved_commit)"
+  if [ -z "$approved" ]; then
+    echo "approval: not yet"
+  elif [ "$approved" = "$(head_commit)" ]; then
+    echo "approval: owner approved ${approved:0:12}"
+  else
+    echo "approval: owner approved ${approved:0:12}, but the tip is now $(head_commit | cut -c1-12)"
   fi
   if [ -n "$(git_in status --porcelain)" ]; then
     echo "checkout: uncommitted changes"
@@ -379,7 +412,7 @@ cmd_final_start() {
   require_clean
   all_items_verified || fail "not every item has a recorded PASS on its completed commit"
   [ -n "$(goal_ref)" ] || fail "no goal reference is recorded (conductor-run is missing)"
-  rm -f "$final_dir/verdict" "$final_dir/reviewed_commit" "$final_dir/report"
+  rm -f "$final_dir/verdict" "$final_dir/reviewed_commit" "$final_dir/report" "$final_dir/approved_commit"
   record "$final_dir" phase review
   log_line "$final_dir" "start $(head_commit)"
   echo "finalization started at $(head_commit) for goal $(goal_ref)"
@@ -392,24 +425,27 @@ cmd_final_review() {
   if [ "$verdict_word" = PASS ]; then
     require_session_branch
     require_clean
-    require_pr_record
     [ "$commit" = "$(head_commit)" ] || fail "PASS must be for the current session tip $(head_commit | cut -c1-12)"
-    [ "$(published_tip)" = "$commit" ] || fail "the session tip is not pushed - run 'baton-item publish' first"
-    local json
-    json="$(pr_json)" || fail "could not read the pull request"
-    [ "$(json_field "$json" headRefOid)" = "$commit" ] || fail "the pull request head is not the reviewed commit"
-    [ "$(json_field "$json" baseRefName)" = "$base_branch" ] || fail "the pull request no longer targets $base_branch"
   fi
   post_kata "$(goal_ref)" "final review: $verdict_word
 reviewed: $commit
 report: $report
-pull request: $(read_marker pr_url)
 summary: $summary"
   record "$final_dir" verdict "$verdict_word"
   record "$final_dir" reviewed_commit "$commit"
   record "$final_dir" report "$report"
   log_line "$final_dir" "review $verdict_word $commit"
   echo "final review: $verdict_word recorded for ${commit:0:12}"
+}
+
+cmd_approve() {
+  [ -f "$final_dir/phase" ] || fail "finalization has not started - the conductor runs 'baton-item final-start'"
+  require_session_branch
+  require_clean
+  final_evidence || exit 1
+  record "$final_dir" approved_commit "$(head_commit)"
+  log_line "$final_dir" "approve $(head_commit)"
+  echo "owner approval recorded for $(head_commit)"
 }
 
 checks_state() {
@@ -436,11 +472,13 @@ else:
 cmd_ready() {
   local wait=0
   [ "${1:-}" != "--wait" ] || wait=1
+  [ -n "$remote" ] && [ -n "$pr_repo" ] || fail "this session has no GitHub remote, so there is no pull request to mark ready - the goal ends with the commits on '$session_branch'"
   [ -f "$final_dir/phase" ] || fail "finalization has not started"
   require_session_branch
   require_clean
-  require_pr_record
   final_evidence || exit 1
+  require_owner_approval
+  require_pr_record
   local json
   json="$(pr_json)" || fail "could not read the pull request"
   [ "$(json_field "$json" state)" = OPEN ] || { echo "baton-item: the pull request is $(json_field "$json" state)" >&2; exit 4; }
@@ -490,6 +528,7 @@ gate) cmd_gate "$@" ;;
 status) cmd_status "$@" ;;
 final-start) cmd_final_start "$@" ;;
 final-review) cmd_final_review "$@" ;;
+approve) cmd_approve "$@" ;;
 ready) cmd_ready "$@" ;;
-*) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
+*) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 1 ;;
 esac

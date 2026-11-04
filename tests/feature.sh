@@ -118,6 +118,30 @@ grep -q "has none" "$output"
 "$baton" start --yes --base main "$local_repo" >/dev/null 2>&1
 [ "$(cat "$local_repo"/.baton/s/*/workflow)" = worktree ]
 
+local_marker="$(ls -d "$local_repo"/.baton/s/*/)"
+local_marker="${local_marker%/}"
+local_worktree="$(cat "$local_marker/worktree")"
+local_item() { BATON_MARKER_DIR="$local_marker" BATON_ROLE=conductor bash "$repository_dir/bin/baton-item" "$@"; }
+printf 'goal1\ngoal1\n' >"$local_marker/conductor-run"
+local_item start l1 >/dev/null
+printf 'local\n' >>"$local_worktree/f"
+git -C "$local_worktree" commit -q -am "local change"
+local_commit="$(git -C "$local_worktree" rev-parse HEAD)"
+local_item complete l1 "tests pass" >/dev/null
+mkdir -p "$local_marker/reports"
+printf '# review\n' >"$local_marker/reports/review.md"
+local_item review l1 PASS --commit "$local_commit" --report "$local_marker/reports/review.md" >/dev/null
+local_item final-start >/dev/null
+local_item final-review PASS --commit "$local_commit" --report "$local_marker/reports/review.md" >/dev/null
+local_item approve >/dev/null
+local_item status >"$output"
+grep -q "pull request: none (no GitHub remote)" "$output"
+grep -q "approval: owner approved" "$output"
+refuses local_item publish
+grep -q "no GitHub remote to publish to" "$output"
+refuses local_item ready
+grep -q "no GitHub remote" "$output"
+
 "$baton" start "$project" >/dev/null 2>&1
 session_dirs=("$project"/.baton/s/*/)
 marker="${session_dirs[0]%/}"
@@ -208,6 +232,79 @@ refuses "$baton" resume "$session_id" "$project"
 grep -q "not the session branch" "$output"
 git -C "$worktree" switch -q "$session_branch"
 
+refuses item publish
+grep -q "owner has not approved" "$output"
+refuses item approve
+grep -q "finalization has not started" "$output"
+[ ! -e "$gh_state/creates" ]
+
+printf 'goal1\ni2\n' >"$marker/conductor-run"
+ROLE=implementer item start i2 >/dev/null
+[ "$(cat "$marker/items/i2/start_commit")" = "$second_commit" ]
+refuses env BATON_MARKER_DIR="$marker" bash "$repository_dir/bin/baton-item" final-start
+grep -q "not every item" "$output"
+
+ROLE=implementer commit_change three
+ROLE=implementer item complete i2 "tests pass" >/dev/null
+third_commit="$(git -C "$worktree" rev-parse HEAD)"
+item status >"$output"
+grep -q "build item: i2" "$output"
+ROLE=reviewer item review i2 PASS --commit "$third_commit" --report "$marker/reports/review.md" >/dev/null
+item gate i2
+item verify i1 >/dev/null
+item verify i2 >/dev/null
+
+ROLE=conductor item status >"$output"
+grep -q "item i1:.*review PASS" "$output"
+grep -q "item i2:.*review PASS" "$output"
+grep -q "pull request: none yet" "$output"
+grep -q "finalization: not started" "$output"
+grep -q "approval: not yet" "$output"
+
+printf 'goal1\ngoal1\n' >"$marker/conductor-run"
+ROLE=conductor item final-start >/dev/null
+[ "$(cat "$marker/final/phase")" = review ]
+refuses item gate goal1
+refuses item approve
+grep -q "no recorded final PASS" "$output"
+
+refuses env BATON_MARKER_DIR="$marker" BATON_ROLE=reviewer bash "$repository_dir/bin/baton-item" final-review PASS --commit "$second_commit" --report "$marker/reports/review.md"
+grep -q "current session tip" "$output"
+ROLE=reviewer item final-review CHANGES --commit "$third_commit" --report "$marker/reports/review.md" --summary "one more fix" >/dev/null
+refuses item approve
+grep -q "no recorded final PASS" "$output"
+printf 'stray\n' >"$worktree/stray.txt"
+refuses env BATON_MARKER_DIR="$marker" BATON_ROLE=reviewer bash "$repository_dir/bin/baton-item" final-review PASS --commit "$third_commit" --report "$marker/reports/review.md"
+grep -q "uncommitted" "$output"
+rm "$worktree/stray.txt"
+: >"$gh_state/calls"
+ROLE=reviewer item final-review PASS --commit "$third_commit" --report "$marker/reports/review.md" --summary "goal is complete" >/dev/null
+grep -q "final review: PASS" "$KATA_LOG"
+item gate goal1
+[ ! -e "$gh_state/creates" ]
+[ ! -s "$gh_state/calls" ]
+refuses git -C "$remote_repo" rev-parse --verify -q "refs/heads/$session_branch"
+
+ROLE=conductor item status >"$output"
+grep -q "approval: not yet" "$output"
+refuses item publish
+grep -q "owner has not approved" "$output"
+refuses item ready
+grep -q "owner has not approved" "$output"
+[ ! -e "$gh_state/creates" ]
+
+ROLE=conductor item approve >"$output"
+[ "$(cat "$marker/final/approved_commit")" = "$third_commit" ]
+ROLE=conductor item status >"$output"
+grep -q "approval: owner approved ${third_commit:0:12}" "$output"
+
+ROLE=implementer commit_change late
+refuses item publish
+grep -q "owner has not approved" "$output"
+refuses item approve
+grep -q "moved after the final review" "$output"
+git -C "$worktree" reset -q --hard "$third_commit"
+
 : >"$gh_state/calls"
 refuses env BATON_MARKER_DIR="$marker" BATON_ROLE=implementer bash "$repository_dir/bin/baton-item" publish --branch "feat/bad..name"
 grep -q "not a valid branch name" "$output"
@@ -225,7 +322,7 @@ session_branch=feat/add-widgets
 grep -q -- "--draft" "$gh_state/calls"
 grep -q -- "--base main" "$gh_state/calls"
 grep -q -- "--head $session_branch" "$gh_state/calls"
-[ "$(git -C "$remote_repo" rev-parse "refs/heads/$session_branch")" = "$second_commit" ]
+[ "$(git -C "$remote_repo" rev-parse "refs/heads/$session_branch")" = "$third_commit" ]
 ROLE=implementer item publish --branch fix/too-late >/dev/null
 [ "$(wc -l <"$gh_state/creates")" -eq 1 ]
 [ "$(cat "$marker/session_branch")" = "$session_branch" ]
@@ -256,48 +353,10 @@ echo '[]' >"$gh_state/list.json"
 printf '7\n' >"$marker/pr_number"
 printf 'https://github.com/acme/widgets/pull/7\n' >"$marker/pr_url"
 
-printf 'goal1\ni2\n' >"$marker/conductor-run"
-ROLE=implementer item start i2 >/dev/null
-[ "$(cat "$marker/items/i2/start_commit")" = "$second_commit" ]
-refuses env BATON_MARKER_DIR="$marker" bash "$repository_dir/bin/baton-item" final-start
-grep -q "not every item" "$output"
-
-ROLE=implementer commit_change three
-ROLE=implementer item complete i2 "tests pass" >/dev/null
-third_commit="$(git -C "$worktree" rev-parse HEAD)"
-item status >"$output"
-grep -q "build item: i2" "$output"
-ROLE=reviewer item review i2 PASS --commit "$third_commit" --report "$marker/reports/review.md" >/dev/null
-item gate i2
-item verify i1 >/dev/null
-item verify i2 >/dev/null
-
-ROLE=conductor item status >"$output"
-grep -q "item i1:.*review PASS" "$output"
-grep -q "item i2:.*review PASS" "$output"
-grep -q "pull request: https://github.com/acme/widgets/pull/7" "$output"
-grep -q "finalization: not started" "$output"
-
-printf 'goal1\ngoal1\n' >"$marker/conductor-run"
-ROLE=conductor item final-start >/dev/null
-[ "$(cat "$marker/final/phase")" = review ]
-refuses item gate goal1
-
-refuses env ROLE=reviewer BATON_MARKER_DIR="$marker" BATON_ROLE=reviewer bash "$repository_dir/bin/baton-item" final-review PASS --commit "$third_commit" --report "$marker/reports/review.md"
-grep -q "not pushed" "$output"
-
-ROLE=implementer item publish >/dev/null
-echo "$third_commit" >"$gh_state/oid"
-refuses env BATON_MARKER_DIR="$marker" BATON_ROLE=reviewer bash "$repository_dir/bin/baton-item" final-review PASS --commit "$second_commit" --report "$marker/reports/review.md"
 echo "stale-oid" >"$gh_state/oid"
-refuses env BATON_MARKER_DIR="$marker" BATON_ROLE=reviewer bash "$repository_dir/bin/baton-item" final-review PASS --commit "$third_commit" --report "$marker/reports/review.md"
+refuses item ready
 grep -q "pull request head" "$output"
 echo "$third_commit" >"$gh_state/oid"
-refuses item ready
-grep -q "no recorded final PASS" "$output"
-ROLE=reviewer item final-review PASS --commit "$third_commit" --report "$marker/reports/review.md" --summary "feature is complete" >/dev/null
-grep -q "final review: PASS" "$KATA_LOG"
-item gate goal1
 
 printf '[{"bucket":"pass"},{"bucket":"fail"}]\n' >"$gh_state/checks.json"
 set +e
@@ -323,10 +382,30 @@ grep -q "ready to merge" "$KATA_LOG"
 [ "$(cat "$gh_state/draft")" = False ]
 
 ROLE=implementer commit_change four
+four_commit="$(git -C "$worktree" rev-parse HEAD)"
 refuses item ready
 grep -q "moved after the final review" "$output"
-
+refuses item publish
+grep -q "owner has not approved" "$output"
+ROLE=reviewer item final-review PASS --commit "$four_commit" --report "$marker/reports/review.md" --summary "fix reviewed" >/dev/null
+refuses item publish
+grep -q "owner has not approved" "$output"
+ROLE=conductor item approve >/dev/null
 ROLE=implementer item publish >/dev/null
+[ "$(git -C "$remote_repo" rev-parse "refs/heads/$session_branch")" = "$four_commit" ]
+
+git -C "$worktree" reset -q --hard "$third_commit"
+ROLE=implementer commit_change rewritten
+rewritten_commit="$(git -C "$worktree" rev-parse HEAD)"
+refuses item complete i2 "tests pass again"
+grep -q "pushed history was rewritten" "$output"
+ROLE=reviewer item final-review PASS --commit "$rewritten_commit" --report "$marker/reports/review.md" --summary "rewritten" >/dev/null
+ROLE=conductor item approve >/dev/null
+refuses item publish
+grep -q "pushed history was rewritten" "$output"
+[ "$(git -C "$remote_repo" rev-parse "refs/heads/$session_branch")" = "$four_commit" ]
+git -C "$worktree" reset -q --hard "$four_commit"
+
 git -C "$upstream" fetch -q origin
 git -C "$upstream" switch -q -c diverge "origin/$session_branch"
 printf 'remote only\n' >"$upstream/remote-only.txt"
@@ -334,10 +413,12 @@ git -C "$upstream" add remote-only.txt
 git -C "$upstream" commit -q -m "remote only commit"
 git -C "$upstream" push -q origin "diverge:$session_branch"
 ROLE=implementer commit_change five
-local_before="$(git -C "$worktree" rev-parse HEAD)"
-refuses env ROLE=implementer BATON_MARKER_DIR="$marker" BATON_ROLE=implementer bash "$repository_dir/bin/baton-item" publish
-grep -q "publication blocked" "$output"
-[ "$(git -C "$worktree" rev-parse HEAD)" = "$local_before" ]
+five_commit="$(git -C "$worktree" rev-parse HEAD)"
+ROLE=reviewer item final-review PASS --commit "$five_commit" --report "$marker/reports/review.md" --summary "five" >/dev/null
+ROLE=conductor item approve >/dev/null
+refuses item publish
+grep -q "pushed history was rewritten" "$output"
+[ "$(git -C "$worktree" rev-parse HEAD)" = "$five_commit" ]
 
 refuses "$baton" remove "$session_id" "$project"
 grep -q "not published" "$output"
