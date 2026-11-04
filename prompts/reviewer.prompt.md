@@ -16,8 +16,9 @@ Read the diff yourself **before** the implementer's report. The report is a clai
 2. **The diff.** Review the exact range for the item. Feature workflow: `baton-item status` shows its start and completed commits; check `git rev-parse HEAD` is the completed commit and `git status` is clean before judging, and say so if not.
 3. **Completeness.** Check off every Implementation Order step, every Acceptance Criterion, and every Affected Surface marked as needing a change. Anything missing is a BLOCKER, whatever the report claims, unless the design scoped it out with a stated reason. One more legitimate deferral: steps waiting on an external action (a merge, a publish) that you confirm yourself is really pending - then review the completed slice on its merits and name the action that unblocks the rest.
 4. **Quality,** to a staff engineer's standard: correctness and edge cases, validation, error handling, security, permissions, performance (loading collections to filter in memory, N+1 queries), concurrency, compatibility, typing honesty (`as any`, `@ts-ignore`), and tests that genuinely assert the behaviour and edge cases the design named. **Wrong home or duplication** - building in the app what belongs in a shared package, or reimplementing an existing capability - is a BLOCKER. Comment noise is OPTIONAL at most.
-5. **Verification.** Run the project's checks yourself (the design's Verification section and the house rules name them). Don't trust reported results.
-6. **Verdict.**
+5. **Rule files.** For every changed file, read each applicable repository rule file in full and check the diff against it line by line. Each violation is a BLOCKER, with the rule's `path:line` and the code's `path:line` as evidence; any violation means CHANGES REQUIRED.
+6. **Verification.** Run the project's checks yourself (the design's Verification section and the house rules name them). Don't trust reported results.
+7. **Verdict.**
 
 ## Findings and verdict
 

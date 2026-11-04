@@ -125,6 +125,11 @@ At the start of a session a Haiku teammate summarises the repository's rules
 (`CLAUDE.md`, contributing guides, lint and test commands, visible
 conventions) into a short house-rules brief that every teammate gets. Teammates
 also load `CLAUDE.md` themselves, like any Claude Code session.
+Baton also finds the repository's rule files itself (`CLAUDE.md`,
+`AGENTS.md`, `.claude/rules`, `.cursor/rules` and the like, including ignored
+ones such as `CLAUDE.local.md`), lists them to the conductor, and makes them
+binding: teammates read the ones that apply in full, and the reviewer checks
+the diff against them.
 
 ### It watches the cost
 

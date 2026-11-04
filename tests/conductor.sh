@@ -168,5 +168,48 @@ failed_marker="$(ls -dt "$repo"/.baton/s/*/ | head -n 1)"
 grep -qx "workspace close w1" "$HERDR_LOG"
 [ ! -e "${failed_marker%/}/tab_id" ]
 
+# The repository's own rule files are listed to the conductor: the committed
+# ones by their worktree path, the ones only in the user's checkout by theirs.
+rules_repo="$test_root/rules-repo"
+git init -q -b main "$rules_repo"
+git -C "$rules_repo" config user.email test@example.com
+git -C "$rules_repo" config user.name test
+mkdir -p "$rules_repo/src" "$rules_repo/.claude/rules" "$rules_repo/node_modules/pkg"
+printf 'fn main() {}\n' >"$rules_repo/src/main.rs"
+printf '# readme\n' >"$rules_repo/README.md"
+printf 'nested rules\n' >"$rules_repo/src/CLAUDE.md"
+printf 'agents\n' >"$rules_repo/AGENTS.md"
+printf -- '---\npaths: ["**/*.rs"]\n---\nno narrating comments\n' >"$rules_repo/.claude/rules/01-comments.md"
+printf 'ignored\n' >"$rules_repo/node_modules/pkg/CLAUDE.md"
+printf 'CLAUDE.local.md\nnode_modules/\n' >"$rules_repo/.gitignore"
+git -C "$rules_repo" add .
+git -C "$rules_repo" commit -q -m init
+printf 'personal\n' >"$rules_repo/CLAUDE.local.md"
+"$baton" start --base main "$rules_repo" >/dev/null 2>&1
+rules_marker="$(ls -dt "$rules_repo"/.baton/s/*/ | head -n 1)"
+rules_marker="${rules_marker%/}"
+rules_worktree="$(cat "$rules_marker/worktree")"
+rules_block="$(sed -n '/^- Repository rule files/,/^- Models you may/p' "$rules_marker/conductor.prompt.md")"
+printf '%s\n' "$rules_block" >"$test_root/rules-block"
+grep -qF "  - \`$rules_worktree/AGENTS.md\`" "$test_root/rules-block"
+grep -qF "  - \`$rules_worktree/src/CLAUDE.md\`" "$test_root/rules-block"
+grep -qF "  - \`$rules_worktree/.claude/rules/01-comments.md\`" "$test_root/rules-block"
+grep -qF "  - \`$rules_repo/CLAUDE.local.md\`" "$test_root/rules-block"
+! grep -qF "README.md" "$test_root/rules-block"
+! grep -qF "main.rs" "$test_root/rules-block"
+! grep -qF "node_modules" "$test_root/rules-block"
+[ "$(grep -c '^  - ' "$test_root/rules-block")" = 4 ]
+
+bare_repo="$test_root/bare-repo"
+git init -q -b main "$bare_repo"
+git -C "$bare_repo" config user.email test@example.com
+git -C "$bare_repo" config user.name test
+printf 'x\n' >"$bare_repo/f"
+git -C "$bare_repo" add f
+git -C "$bare_repo" commit -q -m init
+"$baton" start --base main "$bare_repo" >/dev/null 2>&1
+bare_marker="$(ls -dt "$bare_repo"/.baton/s/*/ | head -n 1)"
+grep -qx "  none found" "$bare_marker/conductor.prompt.md"
+
 printf 'conductor checks passed\n'
 

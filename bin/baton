@@ -557,13 +557,31 @@ in_flight_limit() {
   esac
 }
 
+# rule_files <dir> <work_dir> -> prints the absolute path of each of the
+# repository's rule files (CLAUDE.md, AGENTS.md, CONTRIBUTING.md at any depth,
+# .claude/rules, .cursor/rules, .cursorrules, .github/copilot-instructions.md,
+# CLAUDE.local.md), sorted: the tracked ones as in <work_dir>, the ones only
+# in the user's checkout <dir> (untracked or ignored) as in <dir>.
+rule_files() {
+  local dir="$1" work_dir="$2"
+  local pattern='(^|/)(CLAUDE|CLAUDE\.local|AGENTS|CONTRIBUTING)\.md$|^\.claude/rules/|^\.cursor/rules/.*\.(mdc|md)$|^\.cursorrules$|^\.github/copilot-instructions\.md$'
+  {
+    { git -C "$work_dir" ls-files 2>/dev/null | grep -E "$pattern" || true; } | awk -v root="$work_dir" '{ print root "/" $0 }'
+    comm -13 <(git -C "$dir" ls-files 2>/dev/null | sort) \
+      <(cd "$dir" && { find . \( -name .git -o -name node_modules -o -name .baton \) -prune -o -type f -print | sed 's|^\./||' | grep -E "$pattern" || true; } | sort) |
+      awk -v root="$dir" '{ print root "/" $0 }'
+  } | sort -u
+}
+
 # write_conductor_prompt <dir> <marker_dir> <work_dir> -> writes the
 # conductor's system prompt (its persona plus this session's facts) to
 # <marker_dir>/conductor.prompt.md and prints that path.
 write_conductor_prompt() {
-  local dir="$1" marker_dir="$2" work_dir="$3" file="$2/conductor.prompt.md" workflow models think=no backend model cost_line
+  local dir="$1" marker_dir="$2" work_dir="$3" file="$2/conductor.prompt.md" workflow models think=no backend model cost_line rules
   workflow="$(session_workflow "$marker_dir")"
   models="$(allowed_worker_models "$dir")" || return 1
+  rules="$(rule_files "$dir" "$work_dir" | sed 's/^/  - `/; s/$/`/')"
+  [ -n "$rules" ] || rules="  none found"
   backend="$(session_backend "$marker_dir")"
   cost_line="\`$BIN_DIR/baton cost $(basename "$marker_dir") $dir\`"
   if [ "$backend" = omp ]; then
@@ -587,6 +605,8 @@ write_conductor_prompt() {
 - Feature bookkeeping: \`$BIN_DIR/baton-item\` (on PATH as \`baton-item\`)
 - Desktop notification: \`$BIN_DIR/baton-notify "<text>"\`
 - Token report: $cost_line
+- Repository rule files (binding on every teammate - pass this list in every brief):
+$rules
 - Models you may give teammates, cheapest first: \`$models\`
 - Items in flight at once: at most $(in_flight_limit)
 - Item cap for this run: ${BATON_MAX_ITEMS:-none}
