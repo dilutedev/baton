@@ -319,8 +319,9 @@ it ends with the commits on the session branch, ready locally. The
 conductor's backlog items are review steps, not PRs: the implementer commits
 each item directly on the session branch, the reviewer checks that exact
 commit, and only a PASS lets the next item start. Nothing is pushed per item.
-The commits are planned in the principal's design (each one purpose, building
-and passing its tests on its own, with the why in its body), and while they are
+The commits are planned in the principal's design (each one purpose and
+building on its own, with the why in its body; the full test suite passes at
+the tip), and while they are
 unpushed a review fix is folded into the commit it belongs to
 (`git commit --fixup` and an autosquash rebase, then `baton-item complete`
 again), so a "fix review" commit never lands.

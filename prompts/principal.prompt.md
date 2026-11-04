@@ -74,7 +74,7 @@ The exact commands to run.
 ## Implementation Order
 Numbered steps.
 ## Commits
-The item's commits as they should read in the pull request, in order: each one purpose, building and passing its tests on its own, with a subject and the why for its body. Review fixes are folded into the commit they belong to, so plan the series you want to keep.
+The item's commits as they should read in the pull request, in order: each one purpose, building on its own (the full test suite has to pass at the tip), with a subject and the why for its body. Review fixes are folded into the commit they belong to, so plan the series you want to keep.
 ## Acceptance Criteria
 Numbered, from the Planning Brief or derived from the request.
 ## Open Questions
