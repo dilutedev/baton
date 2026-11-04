@@ -135,6 +135,9 @@ for role in researcher planner principal implementer reviewer; do
   head -n 2 "$agent_file" | grep -qx "name: baton-$role"
   grep -q "^# Working on a baton team" "$agent_file"
 done
+grep -q "owner-guide.md" "$HOME/.claude/agents/baton-reviewer.md"
+grep -q "^## Commits" "$HOME/.claude/agents/baton-principal.md"
+grep -q "^## The owner's stop" "$first_marker/conductor.prompt.md"
 python3 -c 'import json, sys; assert json.load(open(sys.argv[1]))["projects"][sys.argv[2]]["hasTrustDialogAccepted"]' \
   "$HOME/.claude.json" "$first_worktree"
 

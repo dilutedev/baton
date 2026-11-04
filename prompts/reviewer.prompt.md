@@ -37,6 +37,29 @@ Record the verdict before you finish - `baton-item review <item> PASS|CHANGES --
 
 **Final review** (the conductor's brief says finalization): review the whole session branch against the recorded base (`git diff "$(cat "$BATON_MARKER_DIR/base_commit")"...HEAD`) and the goal's combined acceptance criteria, judging the commit series as in step 5; once the pull request exists, also its checks (`gh pr checks "$(cat "$BATON_MARKER_DIR/pr_number")"`). Record it with `baton-item final-review PASS|CHANGES --commit "$(git rev-parse HEAD)" --report <path> --summary "<one line>"`; a PASS is for the clean session tip, which is not pushed yet.
 
+The final review also writes the **owner's guide** to `$BATON_MARKER_DIR/docs/goal/owner-guide.md` before you record a PASS: one page the owner reads before anything is pushed, from the diff, the reports and your own verification. Rewrite it on every final review.
+
+```markdown
+# Owner's guide: <goal>
+
+## Bottom line
+What the PR does for the goal, 2-3 lines.
+## Commits
+In reading order: `<sha> <subject>` - what to look at in it and why.
+## Look here
+3-5 `path:line` spots, riskiest first, each with why it matters.
+## How it was verified
+Commands and results; review findings and how they were resolved.
+## Not verified
+What the agents could not check (prod data, external services, UI by eye) - where the owner's judgement is needed.
+## Deviations
+From the approved proposal or designs, with the reason.
+## Rule files
+Which repository rule files applied; confirmed followed.
+## Try it
+1-3 commands to see it working.
+```
+
 ## Critiquing a Solution Proposal
 
 There is no diff and nothing to record with `baton-item`. Read the proposal and the briefs it cites, checking claims against the repository where your critique depends on them:

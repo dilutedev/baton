@@ -36,8 +36,9 @@ your decision, so you don't have to review everything yourself.
 Every goal starts with a [proposal phase](#the-proposal-phase): the team
 investigates and the conductor brings you a recommendation and a proposed
 backlog. Nothing is built until you approve it. After that the conductor
-delivers the backlog on its own, item by item, as reviewed commits on one
-draft pull request.
+delivers the backlog on its own, item by item, as reviewed commits on the
+session's branch, then stops with a one-page guide to what the team did:
+nothing is pushed, and no pull request opened, until you say ok.
 
 Baton is built on Claude Code's [agent teams](https://code.claude.com/docs/en/agent-teams):
 the conductor is the team lead, and each role is a teammate it spawns from an
@@ -67,7 +68,8 @@ baton start                  # from a herdr pane: the conductor opens in that pa
 Tell the conductor your goal, or describe an issue (`baton start --goal "..."`
 does the same from the command line). It comes back with a proposal and a
 desktop notification. Reply to approve it or ask for changes. Once you
-approve, it builds the backlog and works through it.
+approve, it builds the backlog and works through it, then comes back with the
+finished branch and its [owner's guide](#the-owners-stop) before it pushes.
 
 ## How a session works
 
@@ -150,8 +152,8 @@ session's token use, and `baton cost` shows it at any time.
 | **researcher** | Finds how the code works today and, for a problem, its root cause. Technical Brief. |
 | **planner** | Settles product scope and acceptance criteria when they are open. Planning Brief. |
 | **principal** | Solution Proposals, Implementation Designs, and advice to the conductor. |
-| **implementer** | Builds, verifies and commits one item at a time. The only role that commits. |
-| **reviewer** | Independent review of a proposal or an implementation: PASS or CHANGES REQUIRED. |
+| **implementer** | Builds, verifies and commits one item at a time, as the commits the design planned. The only role that commits. |
+| **reviewer** | Independent review of a proposal or an implementation, commit series included: PASS or CHANGES REQUIRED. Writes the owner's guide at the final review. |
 
 The prompts live in `prompts/`. `team-protocol.md` is appended to every
 teammate's prompt and defines how it talks to the conductor.
@@ -244,8 +246,42 @@ Reply with a question, a revision (which gets a fresh critique), or an
 approval. On approval the conductor creates the backlog from the proposal and
 starts delivering. Until then `baton-item start` refuses to begin any build.
 Briefs, proposals and reviews live in the session's marker dir
-(`.baton/s/<id>/docs/`) and are never committed. When the backlog is done,
-the conductor writes a private review summary to `.baton/s/<id>/summary.md`.
+(`.baton/s/<id>/docs/`) and are never committed.
+
+### The owner's stop
+
+When the backlog is done and the final reviewer has passed the whole branch
+(code, acceptance criteria, rule files and the commit series, read top to
+bottom), the conductor stops, always, also with `--think`. It sends you the path
+of the **owner's guide**, `.baton/s/<id>/docs/goal/owner-guide.md`, written by
+the final reviewer, and its bottom line, and sends a desktop notification. The
+guide is one page:
+
+```
+Bottom line          what the PR does for the goal, 2-3 lines
+Commits              in reading order: <sha> <subject> - what to look at in it and why
+Look here            3-5 path:line spots, riskiest first, each with why it matters
+How it was verified  commands and results; review findings and how they were resolved
+Not verified         what the agents could not check - where your judgement is needed
+Deviations           from the approved proposal or designs, with the reason
+Rule files           which repository rule files applied; confirmed followed
+Try it               1-3 commands to see it working
+```
+
+Your reply decides what happens next:
+
+- **"ok"**: the conductor records your approval (`baton-item approve`),
+  comments `approved by owner: <sha>` on the goal issue, and has the
+  implementer push and open the draft PR, whose body is built from the guide.
+  Without a GitHub remote it closes the goal and reports the branch.
+- **A question**: answered from the guide and the reports; nothing changes.
+- **"change X"**: back to the implementer. Before the first push the fix is
+  folded into whichever commit of the goal it belongs to; the final review runs
+  again on the new range and you get an updated guide.
+
+Pushed history is never rewritten. After the push, a fix (failing CI, PR
+feedback) is a new commit with a meaningful message, re-reviewed and shown to
+you again; approval is per commit, and `publish` only pushes an approved tip.
 
 ### Session worktrees
 
@@ -283,6 +319,11 @@ it ends with the commits on the session branch, ready locally. The
 conductor's backlog items are review steps, not PRs: the implementer commits
 each item directly on the session branch, the reviewer checks that exact
 commit, and only a PASS lets the next item start. Nothing is pushed per item.
+The commits are planned in the principal's design (each one purpose, building
+and passing its tests on its own, with the why in its body), and while they are
+unpushed a review fix is folded into the commit it belongs to
+(`git commit --fixup` and an autosquash rebase, then `baton-item complete`
+again), so a "fix review" commit never lands.
 Baton never merges the PR. If a goal is too big for one PR, split it into
 smaller sessions.
 
@@ -305,9 +346,9 @@ conductor closes an item only after `baton-item verify` confirms the record.
 When the backlog is exhausted the conductor starts finalization
 (`baton-item final-start`): the implementer runs whole-goal verification, and
 the reviewer reviews the combined diff against the base and records a final
-PASS for the clean session tip. Nothing is pushed yet. The owner then decides:
-on their ok the conductor runs `baton-item approve`, which records the tip they
-agreed to.
+PASS for the clean session tip. Nothing is pushed yet. The owner then decides
+([the owner's stop](#the-owners-stop)): on their ok the conductor runs
+`baton-item approve`, which records the tip they agreed to.
 
 - `publish` pushes the approved tip (never force) and creates the draft PR
   once, or finds and reuses it, including after an interrupted create. It

@@ -188,11 +188,20 @@ Keep up to the session's in-flight limit of items claimed at once, so research a
 Items are reviewed commits on the session branch. Nothing is pushed until the owner has approved the whole.
 
 - At the start of every turn after a resume, run `baton-item status`: close any item with a recorded PASS that is still open in kata, and continue a finalization already underway.
-- When no open items remain, don't close the goal yet: run `baton-item final-start`, set both lines of `conductor-run` to the goal ref, and have an implementer run whole-goal verification (it pushes nothing). Then a reviewer (opus) reviews `base..HEAD` and records it with `baton-item final-review`.
-- After a final PASS the owner decides, also with `--think`: report the final review's bottom line and wait. On their ok, run `baton-item approve`, comment `approved by owner: <sha>` on the goal, and have the implementer run `baton-item publish`. A change request goes back to the implementer, then to the final reviewer, then to the owner again.
-- Then `baton-item ready --wait`. Exit 0: close the goal (`kata close <goal-ref> --done --message "ready to merge: <url> - <what the goal delivers>" --evidence "pr:<url>" --agent`) and stop with **ready to merge** - never say "shipped", never merge. Exit 2: checks still running, stop and say so. Exit 3: checks failing, back to the implementer with the failing checks as a new commit, then final review and the owner again. Exit 4: the PR was closed or merged outside the session, stop and report.
+- When no open items remain, don't close the goal yet: run `baton-item final-start`, set both lines of `conductor-run` to the goal ref, and have an implementer run whole-goal verification (it pushes nothing). Then a reviewer (opus) reviews `base..HEAD` - code, acceptance criteria, rule files and the commit series - writes the owner's guide and records it with `baton-item final-review`.
+- After a final PASS, stop for the owner (below). Nothing is pushed before their ok.
+- After the push, `baton-item ready --wait`. Exit 0: close the goal (`kata close <goal-ref> --done --message "ready to merge: <url> - <what the goal delivers>" --evidence "pr:<url>" --agent`) and stop with **ready to merge** - never say "shipped", never merge. Exit 2: checks still running, stop and say so. Exit 3: checks failing, back to the implementer with the failing checks as a new commit, then final review and the owner again. Exit 4: the PR was closed or merged outside the session, stop and report.
 - Without a GitHub remote (see "Publication" in "This session"), `publish` and `ready` refuse. After the owner's ok, close the goal with `--message "branch ready: <branch> - <what the goal delivers>" --evidence "reviewed-paths:<final review path>"` and stop with the branch name.
 - A publication blocker (push refused, diverged branch, changed PR) is the user's to resolve: stop and report it verbatim.
+
+## The owner's stop
+
+Always, also with `--think`: the owner reads what the team did before it leaves the machine. Send them the path of `$BATON_MARKER_DIR/docs/goal/owner-guide.md` and its bottom line, run `baton-notify "<slug>: final review passed - waiting for your ok"`, and wait:
+
+- **"ok"**: run `baton-item approve`, comment `approved by owner: <sha>` on the goal issue, and have the implementer publish (push and draft PR). Then `baton-item ready --wait`.
+- **A question**: answer it from the guide and the reports. Nothing changes.
+- **"change X"**: back to the implementer. Before the first push the fix is folded into whichever commit of the goal it belongs to. Then the final reviewer reviews the new range, and the owner gets an updated guide and is asked again.
+- After the push, history is never rewritten: a fix (failing CI, PR feedback) is a new commit with a meaningful message, re-reviewed by the final reviewer and shown to the owner again. Approval is per commit, and `publish` pushes only an approved tip.
 
 ---
 
@@ -207,8 +216,6 @@ Stop and report only when one of these holds:
 - a `checkpoint` item just passed
 - the item cap is reached
 - a decision only the user can make: product intent that contradicts the proposal, three review rounds without convergence, a publication blocker, or an external action (a merge, a publish) the work waits on
-
-When the backlog is done, first write `$BATON_MARKER_DIR/summary.md` for the user to review before merging: the bottom line and the PR or branch, what each item shipped, deviations from the approved proposal, open risks and follow-ups, how the work was verified, and the path to each item's implementer and review reports. Build it from those reports and kata, not from the code. It is private to the user and never committed or published.
 
 Every stop report leads with the bottom line, then: what was done, what is in flight, what needs the user (with your recommendation), backlog counts (`kata list <item scope filters> --status all --agent`), and cost. Then `baton-notify "<slug>: <the reason, in a few words>"`.
 
