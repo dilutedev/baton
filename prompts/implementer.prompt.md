@@ -32,17 +32,12 @@ If the work is complete except for steps waiting on an external action only the 
 
 Follow the repository's own git conventions where it has them. Never commit to the trunk branch, force-push, rewrite reviewed history, merge, or delete a branch. Review fixes are new commits on top. Pipeline documents under `$BATON_MARKER_DIR` are never committed.
 
-### Feature workflow (`$BATON_MARKER_DIR/workflow` is `feature`)
-
-One session branch and one draft pull request for the whole goal; never create or switch branches.
+One session branch for the whole goal and one draft pull request at the end; never create or switch branches.
 
 - Before changing anything: `baton-item start <item>`. It refuses unless the checkout is clean on the session branch, every earlier item passed review, and the proposal was approved - resolve what it says rather than working around it. It is safe to rerun when the item comes back after review.
-- After the conductor says "commit": commit on the session branch, then `baton-item complete <item> "<verification summary: commands and results>"`, then `baton-item publish --branch "<prefix>/<goal-slug>" --title "<title of the whole feature>" --body "<what the feature does and why>"`. The prefix is `feat`, `fix`, `chore`, `refactor` or `docs` for the goal as a whole, unless the repository names branches differently. The branch, title and body are only used on the first publish. A non-zero exit is a publication blocker: keep your commits and finish with `STATUS: BLOCKED` and the message it printed.
-- **Finalization** (the conductor's brief says so): don't run `start` or `complete`. Run the whole-feature verification, make sure the checkout is clean, run `baton-item publish`, and report the session tip. Fixes for a final-review finding or failing CI are new commits followed by `baton-item publish`.
-
-### Worktree workflow (`$BATON_MARKER_DIR/workflow` is `worktree`)
-
-Each item gets its own branch, named `<prefix>/<slug>-<item>` (prefix as above). If a branch ending in `-<item>` exists, this item is coming back to you: check it out. Otherwise branch from trunk - or, if an item it is blocked by (`kata show <item> --agent`) isn't merged into trunk yet, from that item's branch (the most recent, if several), and say so in your report. Commit everything before switching branches. If the repository has a remote and `gh` works, push and open a pull request against trunk; otherwise commit locally and say why.
+- After the conductor says "commit": commit on the session branch, then `baton-item complete <item> "<verification summary: commands and results>"`. Push nothing: the owner approves the whole goal before anything leaves this machine.
+- **Finalization** (the conductor's brief says so): don't run `start` or `complete`. Run the whole-goal verification, make sure the checkout is clean, and report the session tip.
+- **Publishing** (only when the conductor says the owner approved): `baton-item publish --branch "<prefix>/<goal-slug>" --title "<title of the whole goal>" --body "<what the goal delivers and why>"`. The prefix is `feat`, `fix`, `chore`, `refactor` or `docs` for the goal as a whole, unless the repository names branches differently. The branch, title and body are only used on the first publish. A non-zero exit is a publication blocker: keep your commits and finish with `STATUS: BLOCKED` and the message it printed. After the push, a fix for failing CI or feedback is a new commit that goes through the final review and the owner before the next `publish`.
 
 ## Rules
 

@@ -42,11 +42,13 @@ BATON_USE_COLOR=0
 usage() {
   cat <<'EOF'
 Usage:
-  baton start [--base BRANCH] [--workflow|-w feature|worktree] [--think] [--goal TEXT] [--alias NAME]
+  baton start [--base BRANCH] [--think] [--goal TEXT] [--alias NAME]
               [--backend claude|omp] [DIR]
-                                       Start a new session for DIR (default: cwd) in its own git worktree,
-                                       branched from BASE (default: the remote's default branch), and
-                                       open the conductor (in this herdr pane, or a new herdr workspace)
+                                       Start a new session for DIR (default: cwd) in its own git worktree
+                                       and branch, branched from BASE (default: the remote's default
+                                       branch), and open the conductor (in this herdr pane, or a new
+                                       herdr workspace). A session works one goal; start another
+                                       session for the next goal.
   baton status [REF] [DIR]             List every session for DIR, running or stopped;
                                        with REF, show that session in full
   baton resume [--alias NAME] [--backend claude|omp] [REF] [DIR]
@@ -241,16 +243,6 @@ resolve_base() {
   BASE_REF="$requested"
 }
 
-session_workflow() {
-  local marker_dir="$1" recorded
-  recorded="$(cat "$marker_dir/workflow" 2>/dev/null || true)"
-  if [ -z "$recorded" ] && [ -f "$marker_dir/workflow_version" ]; then
-    recorded="$(sed 's/-v1$//' "$marker_dir/workflow_version")"
-    echo "$recorded" >"$marker_dir/workflow"
-  fi
-  echo "$recorded"
-}
-
 github_repo_for_remote() {
   local repo="$1" remote_name="$2" remote_url
   remote_url="$(git -C "$repo" config --get "remote.$remote_name.url" 2>/dev/null)" || return 1
@@ -260,21 +252,15 @@ github_repo_for_remote() {
     grep -E '^[^/]+/[^/]+$'
 }
 
-require_feature_prerequisites() {
-  local repo="$1" remote_name="$2" github_repo
+require_publication_prerequisites() {
   command -v gh >/dev/null 2>&1 || {
-    echo "baton: the feature workflow publishes one pull request and needs the GitHub CLI (gh) - install it, or start with --workflow worktree" >&2
+    echo "baton: the base is on a GitHub remote, so the goal ends in a pull request and needs the GitHub CLI (gh) - install it" >&2
     return 1
   }
   gh auth status >/dev/null 2>&1 || {
-    echo "baton: the GitHub CLI is not authenticated - run 'gh auth login', or start with --workflow worktree" >&2
+    echo "baton: the GitHub CLI is not authenticated - run 'gh auth login'" >&2
     return 1
   }
-  github_repo="$(github_repo_for_remote "$repo" "$remote_name")" || {
-    echo "baton: remote '$remote_name' is not a GitHub repository, which the feature workflow requires - start with --workflow worktree to skip the pull request" >&2
-    return 1
-  }
-  echo "$github_repo"
 }
 
 # config_get <file> <key> -> last matching "key = value" line's value, if any.
@@ -577,9 +563,13 @@ rule_files() {
 # conductor's system prompt (its persona plus this session's facts) to
 # <marker_dir>/conductor.prompt.md and prints that path.
 write_conductor_prompt() {
-  local dir="$1" marker_dir="$2" work_dir="$3" file="$2/conductor.prompt.md" workflow models think=no backend model cost_line rules
-  workflow="$(session_workflow "$marker_dir")"
+  local dir="$1" marker_dir="$2" work_dir="$3" file="$2/conductor.prompt.md" models think=no backend model cost_line rules publication
   models="$(allowed_worker_models "$dir")" || return 1
+  if [ -s "$marker_dir/pr_repo" ]; then
+    publication="GitHub \`$(cat "$marker_dir/pr_repo")\` - one draft pull request into \`$(cat "$marker_dir/base_branch")\`"
+  else
+    publication="no GitHub remote - the goal ends with the commits on the session branch"
+  fi
   rules="$(rule_files "$dir" "$work_dir" | sed 's/^/  - `/; s/$/`/')"
   [ -n "$rules" ] || rules="  none found"
   backend="$(session_backend "$marker_dir")"
@@ -600,9 +590,9 @@ write_conductor_prompt() {
 - Session id: \`$(basename "$marker_dir")\`
 - Marker dir: \`$marker_dir\` (also \`\$BATON_MARKER_DIR\`)
 - Worktree: \`$work_dir\` - you and every teammate work here, never in \`$dir\`
-- Workflow: \`${workflow:-none}\`
 - Session branch: \`$(cat "$marker_dir/session_branch" 2>/dev/null || echo none)\`, base \`$(cat "$marker_dir/base_ref" 2>/dev/null || echo none)\`
-- Feature bookkeeping: \`$BIN_DIR/baton-item\` (on PATH as \`baton-item\`)
+- Publication: $publication
+- Commit and review bookkeeping: \`$BIN_DIR/baton-item\` (on PATH as \`baton-item\`)
 - Desktop notification: \`$BIN_DIR/baton-notify "<text>"\`
 - Token report: $cost_line
 - Repository rule files (binding on every teammate - pass this list in every brief):
@@ -795,7 +785,7 @@ new_instance_id() {
 }
 
 cmd_start() {
-  local think=0 dir="." requested_base="" workflow="" pr_repo="" goal="" alias="" backend=""
+  local think=0 dir="." requested_base="" pr_repo="" goal="" alias="" backend=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
     --think) think=1 ;;
@@ -822,13 +812,9 @@ cmd_start() {
       shift
       ;;
     --backend=*) backend="${1#--backend=}" ;;
-    --workflow | -w)
-      [ "$#" -ge 2 ] || { echo "baton: --workflow needs feature or worktree" >&2; exit 1; }
-      case "$2" in
-      feature | worktree) workflow="$2" ;;
-      *) echo "baton: unknown workflow '$2' - use feature or worktree" >&2; exit 1 ;;
-      esac
-      shift
+    --workflow | --workflow=* | -w)
+      echo "baton: --workflow is gone - every session now works one goal on its own worktree and branch; start another session for another goal" >&2
+      exit 1
       ;;
     -*) echo "baton: unknown start option '$1'" >&2; exit 1 ;;
     *) dir="$1" ;;
@@ -847,13 +833,10 @@ cmd_start() {
     exit 1
   }
   resolve_base "$dir" "$requested_base" || exit 1
-  [ -n "$workflow" ] || { [ -n "$BASE_REMOTE" ] && workflow=feature || workflow=worktree; }
-  if [ "$workflow" = feature ]; then
-    [ -n "$BASE_REMOTE" ] || {
-      echo "baton: the feature workflow publishes to a remote and '$BASE_REF' has none - start with --workflow worktree" >&2
-      exit 1
-    }
-    pr_repo="$(require_feature_prerequisites "$dir" "$BASE_REMOTE")" || exit 1
+  if [ -n "$BASE_REMOTE" ] && pr_repo="$(github_repo_for_remote "$dir" "$BASE_REMOTE")"; then
+    require_publication_prerequisites || exit 1
+  else
+    pr_repo=""
   fi
   allowed_worker_models "$dir" >/dev/null || exit 1
   local local_kata_binding=0 omp_prompt
@@ -913,7 +896,6 @@ cmd_start() {
   }
   worktree_path="$(cd "$worktree_path" && pwd -P)"
   [ "$local_kata_binding" = 0 ] || cp "$dir/.kata.toml" "$worktree_path/.kata.toml"
-  echo "$workflow" >"$marker_dir/workflow"
   echo "$backend" >"$marker_dir/backend"
   [ -z "$pr_repo" ] || echo "$pr_repo" >"$marker_dir/pr_repo"
   echo "$session_branch" >"$marker_dir/session_branch"
@@ -929,6 +911,7 @@ cmd_start() {
   echo "baton: started session $instance for $dir"
   echo "  worktree: $worktree_path ($session_branch from $BASE_REF at ${BASE_COMMIT:0:12})"
   echo "  marker dir: $marker_dir"
+  [ -n "$pr_repo" ] || echo "  no GitHub remote: the goal ends with the commits on $session_branch, and no pull request is opened"
   [ -n "$goal" ] || echo "  tell the conductor your goal, or describe the issue."
 
   launch_conductor "$dir" "$marker_dir" "$worktree_path" "$goal" || {
@@ -968,23 +951,22 @@ cmd_resume() {
     exit 1
   fi
 
-  local work_dir="$DIR"
-  if [ -n "$(session_workflow "$marker_dir")" ]; then
-    work_dir="$(cat "$marker_dir/worktree" 2>/dev/null || true)"
-    [ -n "$work_dir" ] && [ -d "$work_dir" ] || {
-      echo "baton: the session checkout '$work_dir' is missing - 'baton remove $instance $DIR' discards this session" >&2
-      exit 1
-    }
-    if [ "$(session_workflow "$marker_dir")" = "feature" ]; then
-      local recorded_branch current_branch
-      recorded_branch="$(cat "$marker_dir/session_branch" 2>/dev/null || true)"
-      current_branch="$(git -C "$work_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-      [ "$current_branch" = "$recorded_branch" ] || {
-        echo "baton: the session checkout is on '$current_branch', not the session branch '$recorded_branch' - switch it back (or commit or stash first); resume does not move branches" >&2
-        exit 1
-      }
-    fi
-  fi
+  local work_dir recorded_branch current_branch
+  work_dir="$(cat "$marker_dir/worktree" 2>/dev/null || true)"
+  [ -n "$work_dir" ] || {
+    echo "baton: session '$instance' predates session worktrees and can't be resumed - 'baton remove $instance $DIR' discards it" >&2
+    exit 1
+  }
+  [ -d "$work_dir" ] || {
+    echo "baton: the session checkout '$work_dir' is missing - 'baton remove $instance $DIR' discards this session" >&2
+    exit 1
+  }
+  recorded_branch="$(cat "$marker_dir/session_branch" 2>/dev/null || true)"
+  current_branch="$(git -C "$work_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  [ "$current_branch" = "$recorded_branch" ] || {
+    echo "baton: the session checkout is on '$current_branch', not the session branch '$recorded_branch' - switch it back (or commit or stash first); resume does not move branches" >&2
+    exit 1
+  }
 
   backend="$(resolve_backend "$DIR" "$marker_dir" "$backend")" || exit 1
   if [ "$backend" = omp ] && [ -n "$alias" ]; then
@@ -995,9 +977,7 @@ cmd_resume() {
   [ "$backend" = omp ] || use_alias "$DIR" "$alias" || exit 1
   echo "$backend" >"$marker_dir/backend"
   echo "baton: resuming session $instance for $DIR"
-  if [ "$(session_workflow "$marker_dir")" = "feature" ]; then
-    BATON_MARKER_DIR="$marker_dir" "$BIN_DIR/baton-item" status || true
-  fi
+  BATON_MARKER_DIR="$marker_dir" "$BIN_DIR/baton-item" status || true
   launch_conductor "$DIR" "$marker_dir" "$work_dir" "$(resume_message "$marker_dir")"
 }
 
@@ -1040,7 +1020,7 @@ check_session_worktree_removable() {
   worktree_path="$(registered_session_worktree "$repo" "$marker_dir")" || status=$?
   [ "$status" = 2 ] && return 0
   [ "$status" = 0 ] || return 1
-  if [ "$(session_workflow "$marker_dir")" = "feature" ]; then
+  if [ -s "$marker_dir/pr_repo" ]; then
     local session_branch local_tip remote_name remote_tip base_commit
     session_branch="$(cat "$marker_dir/session_branch")"
     remote_name="$(cat "$marker_dir/remote")"
@@ -1099,7 +1079,7 @@ cmd_remove() {
     exit 1
   fi
 
-  if [ -n "$(session_workflow "$marker_dir")" ]; then
+  if [ -f "$marker_dir/worktree" ]; then
     check_session_worktree_removable "$DIR" "$marker_dir" || exit 1
   fi
 
@@ -1107,7 +1087,7 @@ cmd_remove() {
     stop_conductor "$marker_dir" || exit 1
   fi
 
-  if [ -n "$(session_workflow "$marker_dir")" ]; then
+  if [ -f "$marker_dir/worktree" ]; then
     remove_session_worktree "$DIR" "$marker_dir" || exit 1
   fi
 
@@ -1226,7 +1206,6 @@ render_session_table() {
   for d in "$dir/.baton/s"/*/; do
     [ -d "$d" ] || continue
     d="${d%/}"
-    session_workflow "$d" >/dev/null
     uuid="$(basename "$d")"
     slug="$(session_slug "$d")"
     progress="-"
@@ -1283,7 +1262,7 @@ for index, row in enumerate(rows):
 }
 
 # render_session_detail <dir> <marker_dir> -> everything baton knows about one
-# session: workflow, branch, worktree, pull request, phase and backlog.
+# session: branch, worktree, pull request, phase and backlog.
 render_session_detail() {
   local dir="$1" d="$2" uuid slug state
   uuid="$(basename "$d")"
@@ -1291,12 +1270,12 @@ render_session_detail() {
   state="$(session_state "$d")"
 
   printf '%s  %s  %s\n' "$(paint 1 "$uuid")" "$(paint "$(instance_state_sgr "$state")" "$state")" "$slug"
-  if [ -n "$(session_workflow "$d")" ]; then
-    printf '  workflow %s  branch %s  base %s@%s\n  worktree %s\n' "$(session_workflow "$d")" \
+  if [ -f "$d/worktree" ]; then
+    printf '  branch %s  base %s@%s\n  worktree %s\n' \
       "$(cat "$d/session_branch" 2>/dev/null)" "$(cat "$d/base_ref" 2>/dev/null)" \
       "$(cut -c1-12 "$d/base_commit" 2>/dev/null)" "$(cat "$d/worktree" 2>/dev/null)"
-    if [ "$(session_workflow "$d")" = "feature" ]; then
-      printf '  pull request %s' "$(cat "$d/pr_url" 2>/dev/null || echo none)"
+    if [ -f "$d/pr_repo" ] || [ -f "$d/final/phase" ]; then
+      [ ! -f "$d/pr_repo" ] || printf '  pull request %s' "$(cat "$d/pr_url" 2>/dev/null || echo none)"
       [ ! -f "$d/final/phase" ] || printf '  finalization %s' "$(cat "$d/final/phase")"
       echo
     fi

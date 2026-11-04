@@ -84,13 +84,24 @@ if "$baton" start --yes "$local_repo" >"$test_root/no-default-output" 2>&1; then
 fi
 grep -q -- "--base" "$test_root/no-default-output"
 
+for workflow_flag in "--workflow worktree" "-w feature" "--workflow=feature"; do
+  if "$baton" start --yes $workflow_flag --base main "$local_repo" >"$test_root/workflow-output" 2>&1; then
+    echo "$workflow_flag should have been rejected"
+    exit 1
+  fi
+  grep -q "every session now works one goal" "$test_root/workflow-output"
+done
+[ ! -e "$local_repo/.baton/s" ]
+
 "$baton" start --yes --base main "$local_repo" >"$test_root/start-output" 2>&1
 grep -q "kata.toml" "$test_root/start-output"
 first_session="$(only_session "$local_repo")"
 first_marker="$local_repo/.baton/s/$first_session"
 first_worktree="$(cat "$first_marker/worktree")"
 
-[ "$(cat "$first_marker/workflow")" = worktree ]
+[ ! -e "$first_marker/workflow" ]
+[ ! -e "$first_marker/pr_repo" ]
+grep -q "no GitHub remote" "$test_root/start-output"
 [ "$(cat "$first_marker/session_branch")" = "baton/$first_session" ]
 [ "$(cat "$first_marker/base_branch")" = main ]
 [ "$(cat "$first_marker/base_commit")" = "$main_head" ]
@@ -117,6 +128,7 @@ case "$args_line" in
 esac
 [ "$(cat "$first_marker/pid")" -gt 0 ]
 grep -q "# This session" "$first_marker/conductor.prompt.md"
+grep -q "^- Publication: no GitHub remote" "$first_marker/conductor.prompt.md"
 [ "$(cat "$(git -C "$first_worktree" rev-parse --path-format=absolute --git-dir)/baton-marker")" = "$first_marker" ]
 for role in researcher planner principal implementer reviewer; do
   agent_file="$HOME/.claude/agents/baton-$role.md"
@@ -201,7 +213,7 @@ git -C "$upstream" push -q origin main
 remote_tip="$(git -C "$upstream" rev-parse main)"
 [ "$(git -C "$test_root/clone" rev-parse refs/remotes/origin/main)" != "$remote_tip" ]
 
-"$baton" start --yes --workflow worktree "$test_root/clone" >/dev/null
+"$baton" start --yes "$test_root/clone" >/dev/null
 clone_marker="$test_root/clone/.baton/s/$(only_session "$test_root/clone")"
 [ "$(cat "$clone_marker/remote")" = origin ]
 [ "$(cat "$clone_marker/base_branch")" = main ]
@@ -209,7 +221,7 @@ clone_marker="$test_root/clone/.baton/s/$(only_session "$test_root/clone")"
 [ "$(cat "$clone_marker/base_commit")" = "$remote_tip" ]
 [ "$(git -C "$(cat "$clone_marker/worktree")" rev-parse HEAD)" = "$remote_tip" ]
 
-"$baton" start --yes --workflow worktree --base origin/develop "$test_root/clone" >/dev/null
+"$baton" start --yes --base origin/develop "$test_root/clone" >/dev/null
 develop_marker="$(ls -dt "$test_root"/clone/.baton/s/*/ | head -n1)"
 [ "$(cat "${develop_marker}remote")" = origin ]
 [ "$(cat "${develop_marker}base_branch")" = develop ]
@@ -238,7 +250,7 @@ fi
 failed_marker="$failing_repo/.baton/s/$(only_session "$failing_repo")"
 failed_worktree="$(cat "$failed_marker/worktree")"
 [ -d "$failed_worktree" ]
-[ "$(cat "$failed_marker/workflow")" = worktree ]
+[ "$(cat "$failed_marker/session_branch")" = "baton/$(basename "$failed_marker")" ]
 grep -q "resume" "$test_root/failed-start-output"
 "$baton" remove "$(basename "$failed_marker")" "$failing_repo" >/dev/null
 [ ! -e "$failed_worktree" ]
@@ -247,7 +259,14 @@ legacy_marker="$failing_repo/.baton/s/deadbeef"
 mkdir -p "$legacy_marker"
 printf 'worktree-v1\n' >"$legacy_marker/workflow_version"
 "$baton" status "$failing_repo" >/dev/null
-[ "$(cat "$legacy_marker/workflow")" = worktree ]
+[ ! -e "$legacy_marker/workflow" ]
+if "$baton" resume deadbeef "$failing_repo" >"$test_root/legacy-resume-output" 2>&1; then
+  echo "a session without a worktree should not resume"
+  exit 1
+fi
+grep -q "baton remove deadbeef" "$test_root/legacy-resume-output"
+"$baton" remove deadbeef "$failing_repo" >/dev/null
+[ ! -e "$legacy_marker" ]
 rm "$HOME/.claude/agents/baton-reviewer.md"
 
 # An uncommitted .kata.toml stays out of git and binds the worktree too.

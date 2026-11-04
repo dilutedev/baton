@@ -21,7 +21,7 @@ touch -t 202601010000 "$instances_dir/12345678"/*
 mkdir -p "$instances_dir/fedcba98" "$instances_dir/00000000"
 printf 'shipped-goal\n' >"$instances_dir/fedcba98/slug"
 printf 'https://github.com/owner/repo/pull/142\n' >"$instances_dir/fedcba98/pr_url"
-printf 'feature\n' >"$instances_dir/fedcba98/workflow"
+printf 'owner/repo\n' >"$instances_dir/fedcba98/pr_repo"
 printf '999999\n' >"$instances_dir/00000000/pid"
 touch -t 202501010000 "$instances_dir/00000000"/*
 

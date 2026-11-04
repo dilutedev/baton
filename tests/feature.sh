@@ -96,8 +96,14 @@ git -C "$project" config "url.$remote_repo.insteadOf" https://github.com/acme/wi
 
 git -C "$project" config --add "url.$remote_repo.insteadOf" git@gitlab.com:acme/widgets.git
 git -C "$project" remote set-url origin git@gitlab.com:acme/widgets.git
-refuses "$baton" start "$project"
-grep -q "not a GitHub repository" "$output"
+"$baton" start "$project" >"$output" 2>&1
+grep -q "no GitHub remote" "$output"
+gitlab_marker="$(ls -d "$project"/.baton/s/*/)"
+gitlab_marker="${gitlab_marker%/}"
+[ ! -e "$gitlab_marker/pr_repo" ]
+BATON_MARKER_DIR="$gitlab_marker" refuses bash "$repository_dir/bin/baton-item" publish
+grep -q "no GitHub remote to publish to" "$output"
+"$baton" remove "$(basename "$gitlab_marker")" "$project" >/dev/null
 git -C "$project" remote set-url origin https://github.com/acme/widgets.git
 touch "$gh_state/unauthenticated"
 refuses "$baton" start "$project"
@@ -114,9 +120,11 @@ printf 'x\n' >"$local_repo/f"
 git -C "$local_repo" add f
 git -C "$local_repo" commit -q -m init
 refuses "$baton" start --yes --workflow feature --base main "$local_repo"
-grep -q "has none" "$output"
+grep -q "every session now works one goal" "$output"
+[ ! -e "$local_repo/.baton/s" ]
 "$baton" start --yes --base main "$local_repo" >/dev/null 2>&1
-[ "$(cat "$local_repo"/.baton/s/*/workflow)" = worktree ]
+[ ! -e "$local_repo"/.baton/s/*/workflow ]
+[ ! -e "$local_repo"/.baton/s/*/pr_repo ]
 
 local_marker="$(ls -d "$local_repo"/.baton/s/*/)"
 local_marker="${local_marker%/}"
@@ -148,9 +156,10 @@ marker="${session_dirs[0]%/}"
 session_id="$(basename "$marker")"
 worktree="$(cat "$marker/worktree")"
 session_branch="baton/$session_id"
-[ "$(cat "$marker/workflow")" = feature ]
+[ ! -e "$marker/workflow" ]
 [ "$(cat "$marker/pr_repo")" = acme/widgets ]
 [ "$(cat "$marker/remote")" = origin ]
+grep -q "^- Publication: GitHub .acme/widgets. - one draft pull request into .main." "$marker/conductor.prompt.md"
 base_commit="$(cat "$marker/base_commit")"
 
 mkdir -p "$marker/reports"
@@ -429,4 +438,4 @@ git -C "$worktree" push -q --force origin "$session_branch"
 [ ! -e "$worktree" ] && [ ! -e "$marker" ]
 git -C "$project" rev-parse --verify -q "refs/heads/$session_branch" >/dev/null
 
-printf 'feature workflow checks passed\n'
+printf 'baton-item checks passed\n'

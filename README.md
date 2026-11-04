@@ -165,8 +165,8 @@ teammate's prompt and defines how it talks to the conductor.
   `.kata.toml` uncommitted: `baton start` keeps it out of git with
   `.git/info/exclude` and copies it into each session worktree. Revert the
   `.kata.local.toml` line `kata init` adds to `.gitignore` too.
-- [`gh`](https://cli.github.com/), authenticated: only for the default
-  `feature` workflow, which publishes one pull request to a GitHub remote.
+- [`gh`](https://cli.github.com/), authenticated: only when the base is on a
+  GitHub remote, where the goal ends in one pull request.
 - [`herdr`](https://herdr.dev/) (recommended). Run `baton start` from a herdr
   pane and the conductor opens in that pane; run it anywhere else while herdr's
   server is running and baton opens a herdr workspace for the session. Without
@@ -207,10 +207,11 @@ with until you `baton stop` and `baton resume` it.
 ## Usage
 
 ```
-baton start [--base BRANCH] [--workflow|-w feature|worktree] [--think] [--goal TEXT] [--alias NAME]
+baton start [--base BRANCH] [--think] [--goal TEXT] [--alias NAME]
             [--backend claude|omp] [DIR]
                              Start a session for DIR (default: cwd) in its own git worktree
-                             and open the conductor (in this herdr pane, or a new herdr workspace)
+                             and branch, and open the conductor (in this herdr pane, or a new
+                             herdr workspace)
 baton status [REF] [DIR]     List every session for DIR, running or stopped;
                              with REF, show that session in full
 baton resume [--alias NAME] [--backend claude|omp] [REF] [DIR]
@@ -266,43 +267,33 @@ The session branch starts from `--base`:
   (`--base origin/main`) instead of a bare local branch.
 
 The base, its commit, and its remote are recorded in the marker dir
-(`base_branch`, `base_ref`, `base_commit`, `remote`), along with
-`workflow`, which says how the session turns backlog items into
-branches and pull requests. It is fixed when the session starts, and `update`
-and `resume` never change it.
+(`base_branch`, `base_ref`, `base_commit`, `remote`), along with `pr_repo`
+when the base is on a GitHub remote.
 
-| `workflow` | Chosen when | What a session produces |
-|---|---|---|
-| `feature` | the base is on a GitHub remote (the default there) | one session branch with the reviewed commits of every backlog item, and **one draft PR** for the whole goal ([details](#one-pr-per-feature)) |
-| `worktree` | the base has no remote, or you pass `--workflow worktree` | one branch per backlog item, cut from trunk (or from an unmerged item it depends on), each with its own PR into trunk when the repository has a remote and `gh` is available |
+### One goal, one PR
 
-Pass `--workflow` (or `-w`) to override the default, for example `-w worktree`
-for a GitLab remote. Instances created by an older baton release have no
-`workflow`; they run in `DIR` itself instead of a worktree.
+A session works **one goal**, and a goal ends in **one pull request**. Once
+the conductor has taken a goal it refuses a second one and tells you to run
+`baton start --goal "..."`, which gives that goal its own worktree, branch and
+PR. Follow-up changes to the same goal are fine.
 
-### One PR per feature
+When the base is on a GitHub remote the goal ends in one draft pull request
+into the base branch; without one (no remote, or a remote that isn't GitHub),
+it ends with the commits on the session branch, ready locally. The
+conductor's backlog items are review steps, not PRs: the implementer commits
+each item directly on the session branch, the reviewer checks that exact
+commit, and only a PASS lets the next item start. Nothing is pushed per item.
+Baton never merges the PR. If a goal is too big for one PR, split it into
+smaller sessions.
 
-A `feature` session turns the whole goal into **one draft pull request**
-into the base branch. The conductor's backlog items are review steps, not PRs:
-implementer commits each item directly on the session branch, reviewer checks
-that exact commit, and only a PASS lets the next item start. Baton never merges
-the PR. If a feature is too big for one PR, split the goal into smaller
-sessions.
-
-`baton start` needs `gh` installed and authenticated and a GitHub remote, and
-stops before creating anything otherwise (`--workflow worktree` skips this).
-Per item, the implementer and reviewer run `baton-item`:
+`baton start` needs `gh` installed and authenticated when the base is on a
+GitHub remote, and stops before creating anything otherwise. `--workflow` is
+gone and is an error. Per item, the implementer and reviewer run `baton-item`:
 
 - `start` records the commit the item starts from and refuses unless the
   proposal was approved, the checkout is clean on the session branch, and
   every earlier item passed.
 - `complete` records the item's completed commit and its verification summary.
-- `publish` pushes the branch (never force) and creates the draft PR once, or
-  finds and reuses it, including after an interrupted create. Before the first
-  push, `--branch` renames the `baton/<uuid>` placeholder to a conventional
-  name such as `feat/venue-shutdown`. A PR that was
-  closed or merged outside the session stops the session instead of opening a
-  replacement.
 - `review` records the verdict, the reviewed commit, and the report path, in
   the marker dir and as a Kata comment. Reports stay in the marker dir, so a
   review never changes the PR head.
@@ -311,18 +302,42 @@ The conductor accepts a reviewer PASS only when `baton-item gate` confirms the r
 completed commit, is the current session tip, and the checkout is clean. The
 conductor closes an item only after `baton-item verify` confirms the record.
 
-When the backlog is exhausted the conductor starts finalization: implementer
-runs whole-feature verification and publishes, reviewer reviews the combined
-diff against the base and the PR's checks, and the conductor runs
-`baton-item ready --wait`, which marks the same PR ready only if the final PASS
-is for the PR head and required checks passed. Failing checks go back to
-implementer; pending checks leave finalization waiting (rerun `baton-item
-ready --wait`). The goal is reported as "ready to merge", not "shipped".
+When the backlog is exhausted the conductor starts finalization
+(`baton-item final-start`): the implementer runs whole-goal verification, and
+the reviewer reviews the combined diff against the base and records a final
+PASS for the clean session tip. Nothing is pushed yet. The owner then decides:
+on their ok the conductor runs `baton-item approve`, which records the tip they
+agreed to.
+
+- `publish` pushes the approved tip (never force) and creates the draft PR
+  once, or finds and reuses it, including after an interrupted create. It
+  refuses any other tip, and refuses when history already pushed was rewritten
+  (`complete` does too), so a fix after a push is a new commit that is
+  reviewed and approved again. Before the first push, `--branch` renames the
+  `baton/<uuid>` placeholder to a conventional name such as
+  `feat/venue-shutdown`. A PR that was closed or merged outside the session
+  stops the session instead of opening a replacement.
+- `ready --wait` marks the same PR ready only if the final PASS and the
+  approval are for the PR head and required checks passed. Failing checks go
+  back to the implementer; pending checks leave finalization waiting (rerun
+  `baton-item ready --wait`). The goal is reported as "ready to merge", not
+  "shipped".
+
+A session without a GitHub remote gets every command except `publish` and
+`ready`, which say there is nowhere to publish.
+
+Sessions started by an older baton keep working on resume: one that used
+the old `feature` workflow follows these rules from its current state
+(anything already pushed stays as it is), and one that used the `worktree`
+workflow continues on its session branch, leaving its per-item branches
+alone. An instance with no worktree (from before session worktrees) is
+refused on resume; `baton remove` it.
 
 `resume` leaves the checkout alone but refuses if it is on a different branch
-than the session branch, then prints `baton-item status` (items, publication,
-PR, finalization). `remove` also refuses while commits on the session branch
-aren't on the remote; the PR may stay open.
+than the session branch, then prints `baton-item status` (items, approval,
+publication, PR, finalization). `remove` also refuses while commits on the
+session branch aren't on the remote (for a session with a PR); the PR may
+stay open.
 
 A worktree is a fresh checkout, so it doesn't contain ignored files. `.env`
 files, installed dependencies, databases, and port numbers are not shared or
@@ -336,7 +351,7 @@ clean up.
 `baton remove` stops the session if it's running, deletes the worktree, then
 deletes only `DIR/.baton/s/<uuid>/`. It refuses if the worktree has uncommitted
 changes or ignored files (such as a hand-copied `.env`). The `baton/<uuid>`
-branch and any item branches stay, so pushed or unpushed work isn't lost. Other runs, project files, kata items, and agent
+branch stays, so pushed or unpushed work isn't lost. Other runs, project files, kata items, and agent
 transcripts stay.
 
 
@@ -448,7 +463,7 @@ f9b8a6b9  stopped  root-cause-stall    proposal  -     3d ago
 
 `PROGRESS` is closed/total backlog items, or `proposal` until you approve one.
 `ACTIVE` is the last time baton wrote to the session's marker dir.
-`baton status <id|slug>` shows one session in full: workflow, branch,
+`baton status <id|slug>` shows one session in full: branch,
 worktree, pull request and every backlog item. If `BATON_MAX_ITEMS` is set,
 the conductor stops after that many items.
 
@@ -456,7 +471,7 @@ the conductor stops after that many items.
 
 - `baton start` creates the worktree and marker dir, writes the agent
   definitions, writes the conductor's system prompt (`prompts/conductor.prompt.md`
-  plus the session's facts: paths, workflow, allowed models, limits) to
+  plus the session's facts: paths, publication, allowed models, limits) to
   `.baton/s/<id>/conductor.prompt.md`, and starts `claude` in the worktree
   with agent teams enabled. From a herdr pane (`HERDR_ENV` set) it becomes
   `claude` in that pane and records its pid. Otherwise, with herdr's server
@@ -473,8 +488,8 @@ the conductor stops after that many items.
   `task` tool and messages them with `write agent://<name>`; the overlay allows
   per-spawn models up to `worker.max-model` and keeps idle teammates alive for
   a day instead of omp's 7 minutes.
-- `baton-item` records the commit, review and PR evidence of the feature
-  workflow and refuses steps that would break it. Teammates find the session
+- `baton-item` records the commit, review, approval and PR evidence of a
+  session and refuses steps that would break it. Teammates find the session
   through `BATON_MARKER_DIR` or, when their shell lacks it, a pointer baton
   writes into the worktree's git dir.
 - `baton-notify` shows a desktop notification with the baton icon when the
