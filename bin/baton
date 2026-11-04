@@ -714,7 +714,7 @@ launch_conductor() {
   prompt_file="$(write_conductor_prompt "$dir" "$marker_dir" "$work_dir")" || return 1
   name="baton-$(cat "$marker_dir/slug" 2>/dev/null || basename "$marker_dir")"
   if [ "$backend" = omp ]; then
-    CONDUCTOR_ARGS=(--model "$(omp_model_id "$(resolve_setting "$dir" conductor.model)")" --thinking "$(resolve_setting "$dir" conductor.effort)"
+    CONDUCTOR_ARGS=(--model "$(omp_model_id "$(resolve_setting "$dir" conductor.model)")" --thinking "$(resolve_setting "$dir" conductor.effort)" --hide-thinking
       --config "$omp_config" --append-system-prompt "$prompt_file")
     [ -z "$message" ] || CONDUCTOR_ARGS+=("$message")
     CONDUCTOR_ENV=("PATH=$BIN_DIR:$PATH" "BATON_ROOT=$work_dir" "BATON_MARKER_DIR=$marker_dir")
