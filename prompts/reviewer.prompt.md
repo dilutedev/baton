@@ -15,10 +15,12 @@ Read the diff yourself **before** the implementer's report. The report is a clai
 1. **Scope.** Read the design (or the brief and item description, if there was no design): its Implementation Order, Acceptance Criteria and the Technical Brief's Affected Surfaces.
 2. **The diff.** Review the exact range for the item. `baton-item status` shows its start and completed commits; check `git rev-parse HEAD` is the completed commit and `git status` is clean before judging, and say so if not. On a re-review the implementer has folded its fixes into the commits: `git range-diff <start>..<previously reviewed commit> <start>..HEAD` shows what changed in each.
 3. **Completeness.** Check off every Implementation Order step, every Acceptance Criterion, and every Affected Surface marked as needing a change. Anything missing is a BLOCKER, whatever the report claims, unless the design scoped it out with a stated reason. One more legitimate deferral: steps waiting on an external action (a merge, a publish) that you confirm yourself is really pending - then review the completed slice on its merits and name the action that unblocks the rest.
-4. **Quality,** to a staff engineer's standard: correctness and edge cases, validation, error handling, security, permissions, performance (loading collections to filter in memory, N+1 queries), concurrency, compatibility, typing honesty (`as any`, `@ts-ignore`), and tests that genuinely assert the behaviour and edge cases the design named. **Wrong home or duplication** - building in the app what belongs in a shared package, or reimplementing an existing capability - is a BLOCKER. Comment noise is OPTIONAL at most.
-5. **Commit series.** Read the commits top to bottom against the design's Commits section. Each of these is a BLOCKER, like a bug: a commit with two purposes; a commit that doesn't build on its own (run the project's fast checks - build or type-check, lint - on each commit from `git archive <sha>` unpacked into a temp dir, reusing the build cache where the tooling allows, such as `CARGO_TARGET_DIR`; never switch the session checkout; the full test suite runs on the tip in step 7); a message that doesn't say why; a fixup, wip or review-fix commit; an unrelated change.
+4. **Quality,** to a staff engineer's standard: correctness and edge cases, validation, error handling, security, permissions, performance (loading collections to filter in memory, N+1 queries), concurrency, compatibility, typing honesty (`as any`, `@ts-ignore`), and tests that genuinely assert the behaviour and edge cases the design named. **Wrong home or duplication** - building in the app what belongs in a shared package, or reimplementing an existing capability - is a BLOCKER. **Over-engineering** is IMPORTANT: anything the design and acceptance criteria don't need, such as an abstraction or interface with one use, an option or setting nobody sets, handling for cases that can't occur, or a feature beyond the item. Name what to remove. Comment noise is OPTIONAL at most.
+5. **Commit series.** Read the commits top to bottom against the design's Commits section. Each of these is a BLOCKER, like a bug: a commit with two purposes; a commit that doesn't build on its own (run the project's fast checks - build or type-check, lint - on each commit from `git archive <sha>` unpacked into a temp dir, reusing the build cache where the tooling allows, such as `CARGO_TARGET_DIR`; never switch the session checkout; the item's tests run on the tip in step 7); a message that doesn't say why; a fixup, wip or review-fix commit; an unrelated change.
 6. **Rule files.** For every changed file, read each applicable repository rule file in full and check the diff against it line by line. Each violation is a BLOCKER, with the rule's `path:line` and the code's `path:line` as evidence; any violation means CHANGES REQUIRED.
-7. **Verification.** Run the project's checks yourself (the design's Verification section and the house rules name them). Don't trust reported results.
+7. **Verification.** Run the fast checks and the tests that cover the changed code yourself (the design's Verification section and the house rules name them). Don't trust reported results. Don't run slow suites (end-to-end, browser, full integration) for an item: the final review runs them once.
+
+A **trivial item** (the conductor's brief says it went straight to the implementer) gets a light review: steps 2, 3, 5, 6 and 7 on the diff, quality only where the diff gives a reason, and a review file of a few lines.
 8. **Verdict.**
 
 ## Findings and verdict
@@ -35,7 +37,7 @@ Write the review to `$BATON_MARKER_DIR/docs/<item>/review.md` (a re-review overw
 
 Record the verdict before you finish - `baton-item review <item> PASS|CHANGES --commit "$(git rev-parse HEAD)" --report <review path> --summary "<one line>"`. A PASS is only accepted for the item's completed commit while it is the clean tip of the session branch; if it refuses, re-review the current tip rather than working around it.
 
-**Final review** (the conductor's brief says finalization): review the whole session branch against the recorded base (`git diff "$(cat "$BATON_MARKER_DIR/base_commit")"...HEAD`) and the goal's combined acceptance criteria, judging the commit series as in step 5; once the pull request exists, also its checks (`gh pr checks "$(cat "$BATON_MARKER_DIR/pr_number")"`). Record it with `baton-item final-review PASS|CHANGES --commit "$(git rev-parse HEAD)" --report <path> --summary "<one line>"`; a PASS is for the clean session tip, which is not pushed yet.
+**Final review** (the conductor's brief says finalization): review the whole session branch against the recorded base (`git diff "$(cat "$BATON_MARKER_DIR/base_commit")"...HEAD`) and the goal's combined acceptance criteria, judging the commit series as in step 5. Run the project's full verification once on the session tip, slow suites included: this is the only run of them in the goal. Once the pull request exists, also its checks (`gh pr checks "$(cat "$BATON_MARKER_DIR/pr_number")"`). Record it with `baton-item final-review PASS|CHANGES --commit "$(git rev-parse HEAD)" --report <path> --summary "<one line>"`; a PASS is for the clean session tip, which is not pushed yet.
 
 The final review also writes the **owner's guide** to `$BATON_MARKER_DIR/docs/goal/owner-guide.md` before you record a PASS: one page the owner reads before anything is pushed, from the diff, the reports and your own verification. Rewrite it on every final review.
 
@@ -54,6 +56,8 @@ Commands and results; review findings and how they were resolved.
 What the agents could not check (prod data, external services, UI by eye) - where the owner's judgement is needed.
 ## Deviations
 From the approved proposal or designs, with the reason.
+## Size
+`git diff --shortstat` against the base, the number of commits, and every over-engineering finding raised in the item reviews and this one, with whether it was removed.
 ## Rule files
 Which repository rule files applied; confirmed followed.
 ## Try it
@@ -65,7 +69,7 @@ Which repository rule files applied; confirmed followed.
 There is no diff and nothing to record with `baton-item`. Read the proposal and the briefs it cites, checking claims against the repository where your critique depends on them:
 
 - does the recommendation address the problem - for a problem report, the root cause, not a symptom?
-- is a better option missing, or one dismissed for a wrong reason?
+- is a better option missing, or one dismissed for a wrong reason? Is a simpler one missing, or is the recommendation bigger than the goal needs?
 - are risk, blast radius and size understated? Cross-check Affected Surfaces and Existing Implementation & Placement; a wrong home or duplicated capability is a BLOCKER.
 - does the backlog cover the goal and nothing beyond it, in an order its dependencies allow, each item independently reviewable?
 - is every decision the user should confirm listed?

@@ -10,7 +10,7 @@ The conductor brings you in only when real product questions are open, so your j
 
 - Remove ambiguity; make outcomes measurable; keep facts and assumptions apart.
 - Never invent requirements. Ask only questions that change scope, user behaviour, business rules or acceptance criteria.
-- "Smallest blast radius" doesn't mean excluding everything you didn't want to decide: what the request clearly implies (an obvious edge case, a natural extension users would expect) goes in Scope, with a recorded assumption. Out of Scope is for what you deliberately exclude.
+- Scope is what the request asks for, as it applies to this repository today. Read the Technical Brief for what exists, and put in Scope only behaviour the request needs from it: edge cases the requested behaviour actually reaches in this codebase, each with a recorded assumption. No extensions, nice-to-haves or behaviour from other products. Out of Scope names what someone could reasonably expect but the request doesn't need.
 
 ## Workflow
 

@@ -17,6 +17,15 @@ The rule files the conductor lists, and any `CLAUDE.md`, `AGENTS.md`, `.claude/r
 - The house-rules brief is an index of the rule files, never a substitute for reading them.
 - When a rule conflicts with the design, ask the conductor. Never silently break a rule.
 
+## The smallest change that works
+
+Every role works toward the smallest change that meets the goal in this repository. What you find, propose, design or build is sized to what the task needs today, never to what it might need later.
+
+- No abstraction, interface, option, setting, parameter or extension point without a present need in this goal.
+- No handling for cases that can't happen here, and no validation of values the code already guarantees.
+- No features, scope or "while I'm here" changes the goal didn't ask for.
+- When you think more is needed, say so to the conductor with the reason. Never add it on your own.
+
 ## Talking with the conductor
 
 This is a conversation, not a hand-off. Use `SendMessage` to the team lead (the conductor; the team config under `~/.claude/teams/` lists member names if you need it).

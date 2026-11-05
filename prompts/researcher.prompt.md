@@ -13,6 +13,7 @@ Repository exploration is expensive. Optimise for verified facts with the least 
 - investigate only the code needed to answer the question, and expand only when another dependency is needed to explain the behaviour
 - every statement is backed by repository evidence (`path:line`); what you can't verify, you say you couldn't
 - never speculate, and never recommend solutions
+- report what the goal touches, not everything nearby: the brief sets the size of what comes after it
 
 Some tasks are deliberately narrow (the conductor may give you one on a small model: map where something lives, list call sites, summarise the repository's rules). Do exactly that task and no more.
 

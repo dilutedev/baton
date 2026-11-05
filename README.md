@@ -237,13 +237,16 @@ sessions, each with its own worktree and marker dir under
    how it understood the goal.
 2. A researcher investigates; for a reported problem, until the root cause is
    established. A planner joins only if product questions are open.
-3. The principal writes a **Solution Proposal**: two or three real options, a
-   recommendation, a proposed backlog, and the decisions you should confirm.
-4. The reviewer critiques it once and the principal answers each point.
+3. The principal writes a **Solution Proposal**: the real options (just one
+   when only one is reasonable), a recommendation, the smallest backlog that
+   delivers the goal, and the decisions you should confirm.
+4. When the goal has a real design choice or carries risk, the reviewer
+   critiques the proposal once and the principal answers each point. The
+   conductor decides whether a critique is needed and tells you up front.
 5. The conductor brings you the bottom line and waits.
 
-Reply with a question, a revision (which gets a fresh critique), or an
-approval. On approval the conductor creates the backlog from the proposal and
+Reply with a question, a revision (which gets a fresh critique if it had
+one), or an approval. On approval the conductor creates the backlog from the proposal and
 starts delivering. Until then `baton-item start` refuses to begin any build.
 Briefs, proposals and reviews live in the session's marker dir
 (`.baton/s/<id>/docs/`) and are never committed.
@@ -264,6 +267,7 @@ Look here            3-5 path:line spots, riskiest first, each with why it matte
 How it was verified  commands and results; review findings and how they were resolved
 Not verified         what the agents could not check - where your judgement is needed
 Deviations           from the approved proposal or designs, with the reason
+Size                 diff shortstat, commit count, over-engineering found and removed
 Rule files           which repository rule files applied; confirmed followed
 Try it               1-3 commands to see it working
 ```
@@ -320,8 +324,10 @@ conductor's backlog items are review steps, not PRs: the implementer commits
 each item directly on the session branch, the reviewer checks that exact
 commit, and only a PASS lets the next item start. Nothing is pushed per item.
 The commits are planned in the principal's design (each one purpose and
-building on its own, with the why in its body; the full test suite passes at
-the tip), and while they are
+building on its own, with the why in its body). Per item, the implementer
+and reviewer run the fast checks and the tests that cover the change; slow
+suites (end-to-end, browser, full integration) run once, in the final review.
+While the commits are
 unpushed a review fix is folded into the commit it belongs to
 (`git commit --fixup` and an autosquash rebase, then `baton-item complete`
 again), so a "fix review" commit never lands.
@@ -345,9 +351,9 @@ completed commit, is the current session tip, and the checkout is clean. The
 conductor closes an item only after `baton-item verify` confirms the record.
 
 When the backlog is exhausted the conductor starts finalization
-(`baton-item final-start`): the implementer runs whole-goal verification, and
-the reviewer reviews the combined diff against the base and records a final
-PASS for the clean session tip. Nothing is pushed yet. The owner then decides
+(`baton-item final-start`): the reviewer reviews the combined diff against
+the base, runs the full verification once (slow suites included), and records
+a final PASS for the clean session tip. Nothing is pushed yet. The owner then decides
 ([the owner's stop](#the-owners-stop)): on their ok the conductor runs
 `baton-item approve`, which records the tip they agreed to.
 
