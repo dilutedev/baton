@@ -16,6 +16,7 @@ cat >"$stub_dir/claude" <<'EOF'
 #!/usr/bin/env bash
 {
   printf 'launch cwd=%s root=%s marker=%s teams=%s\n' "$PWD" "${BATON_ROOT:-}" "${BATON_MARKER_DIR:-}" "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}"
+  printf 'cargo=%s\n' "${CARGO_TARGET_DIR:-}"
   printf 'args:'
   printf ' %s' "$@" | tr '\n' ' '
   printf '\n'
@@ -117,6 +118,7 @@ grep -qx '\.baton/' "$local_repo/.git/info/exclude"
 git -C "$local_repo" check-ignore -q .baton/
 
 launch_line="$(grep "^launch" "$CLAUDE_LOG" | tail -n1)"
+grep -qx "cargo=$first_marker/cargo-target" "$CLAUDE_LOG"
 [ "$launch_line" = "launch cwd=$first_worktree root=$first_worktree marker=$first_marker teams=1" ] || {
   echo "the conductor was not launched in the worktree: $launch_line"
   exit 1

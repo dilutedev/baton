@@ -727,7 +727,7 @@ launch_conductor() {
     CONDUCTOR_ARGS=(--model "$(omp_model_id "$(resolve_setting "$dir" conductor.model)")" --thinking "$(resolve_setting "$dir" conductor.effort)" --hide-thinking
       --config "$omp_config" --append-system-prompt "$prompt_file")
     [ -z "$message" ] || CONDUCTOR_ARGS+=("$message")
-    CONDUCTOR_ENV=("PATH=$BIN_DIR:$PATH" "BATON_ROOT=$work_dir" "BATON_MARKER_DIR=$marker_dir")
+    CONDUCTOR_ENV=("PATH=$BIN_DIR:$PATH" "BATON_ROOT=$work_dir" "BATON_MARKER_DIR=$marker_dir" "CARGO_TARGET_DIR=$marker_dir/cargo-target")
   else
     CONDUCTOR_ARGS=(--model "$(resolve_setting "$dir" conductor.model)" --effort "$(resolve_setting "$dir" conductor.effort)"
       --teammate-mode "$(resolve_setting "$dir" teammate-mode)" --name "$name" --append-system-prompt-file "$prompt_file")
@@ -735,7 +735,7 @@ launch_conductor() {
     [ -z "$permission" ] || CONDUCTOR_ARGS+=(--permission-mode "$permission")
     [ -z "$message" ] || CONDUCTOR_ARGS+=("$message")
     CONDUCTOR_ENV=(CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 "PATH=$BIN_DIR:$PATH"
-      "BATON_ROOT=$work_dir" "BATON_MARKER_DIR=$marker_dir" ${CLAUDE_CONFIG_DIR:+"CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"})
+      "BATON_ROOT=$work_dir" "BATON_MARKER_DIR=$marker_dir" "CARGO_TARGET_DIR=$marker_dir/cargo-target" ${CLAUDE_CONFIG_DIR:+"CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"})
   fi
   rm -f "$marker_dir/pid" "$marker_dir/workspace_id" "$marker_dir/tab_id" "$marker_dir/owns_workspace"
 
