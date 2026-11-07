@@ -762,7 +762,11 @@ resume_message() {
       goal_ref="$(sed -n 1p "$marker_dir/conductor-run")"
       item_ref="$(sed -n 2p "$marker_dir/conductor-run")"
       message="$message Its goal issue is $goal_ref."
-      [ -z "$item_ref" ] || message="$message The item last in flight was $item_ref - check its state in kata and the worktree before deciding what to do next."
+      if [ -f "$marker_dir/final/phase" ]; then
+        message="$message The goal is in finalization: every item has passed review. Run baton-item status: without a final PASS on the tip, the final review continues; with one, the owner's ok is pending, so ask for it rather than starting anything new."
+      elif [ -n "$item_ref" ] && [ "$item_ref" != "$goal_ref" ]; then
+        message="$message The item last in flight was $item_ref - check its state in kata and the worktree before deciding what to do next."
+      fi
     fi
     if [ -f "$marker_dir/proposal" ]; then
       message="$message This session is still in its proposal phase - nothing has been approved for building. Pick it up as your prompt's Proposal phase section describes."
@@ -1437,7 +1441,7 @@ cmd_update() {
   fi
   echo "baton: updated $ROOT_DIR ($branch):"
   "${git_dir[@]}" log --oneline --no-decorate "$before..$after" | sed 's/^/  /'
-  echo "Running instances keep the version they started with until you 'baton stop' and 'baton resume' them."
+  echo "Running sessions use the new baton-item at once. Their conductor prompt and environment stay as they started until you 'baton stop' and 'baton resume' them; any start or resume rewrites the teammate definitions every session shares."
 }
 
 cmd_config() {

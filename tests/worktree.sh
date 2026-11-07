@@ -195,6 +195,16 @@ mv "$second_worktree.moved" "$second_worktree"
 grep -qx "launch cwd=$second_worktree root=$second_worktree marker=$second_marker teams=1" "$CLAUDE_LOG"
 grep -q "^args:.*Resuming this session - no goal has been given yet" "$CLAUDE_LOG"
 
+printf 'goal-slug\n' >"$second_marker/slug"
+printf 'goal1\ngoal1\n' >"$second_marker/conductor-run"
+mkdir -p "$second_marker/final"
+printf 'review\n' >"$second_marker/final/phase"
+: >"$CLAUDE_LOG"
+"$baton" resume "$second_session" "$local_repo" >/dev/null
+grep -q "^args:.*Its goal issue is goal1. The goal is in finalization" "$CLAUDE_LOG"
+! grep -q "item last in flight" "$CLAUDE_LOG"
+rm -r "$second_marker/final" "$second_marker/slug" "$second_marker/conductor-run"
+
 remote_repo="$test_root/remote.git"
 upstream="$test_root/upstream"
 make_repository "$upstream"
