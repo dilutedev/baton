@@ -13,7 +13,9 @@
 #   verify <item>                         succeed only for a recorded PASS on the completed commit
 #   gate <item>                           the check the conductor runs before it accepts a reviewer PASS
 #   status                                items, approval, publication and finalization state
-#   final-start                           begin whole-goal finalization
+#   final-start                           begin whole-goal finalization; items' commits may
+#                                         have been rewritten since review (a restack or a
+#                                         folded fix), since the final review covers base..HEAD
 #   final-review PASS|CHANGES --commit SHA --report PATH [--summary TEXT]
 #                                         PASS needs the clean session tip; nothing has to be pushed
 #   approve                               record the owner's approval of the final-reviewed tip
@@ -141,13 +143,13 @@ require_owner_approval() {
 }
 
 verify_item() {
-  local item="$1" completed reviewed
+  local item="$1" history="${2:-unchanged}" completed reviewed
   completed="$(item_value "$item" completed_commit)"
   reviewed="$(item_value "$item" reviewed_commit)"
   [ -n "$completed" ] || { echo "item $item has no completed commit recorded" >&2; return 1; }
   [ "$(item_value "$item" verdict)" = PASS ] || { echo "item $item has no recorded PASS for its latest completed commit" >&2; return 1; }
   [ "$reviewed" = "$completed" ] || { echo "item $item was reviewed at ${reviewed:0:12}, not its completed commit ${completed:0:12}" >&2; return 1; }
-  git_in merge-base --is-ancestor "$completed" HEAD 2>/dev/null || { echo "item $item's reviewed commit is not on the session branch" >&2; return 1; }
+  [ "$history" = rewritten ] || git_in merge-base --is-ancestor "$completed" HEAD 2>/dev/null || { echo "item $item's reviewed commit is not on the session branch" >&2; return 1; }
 }
 
 all_items_verified() {
@@ -155,7 +157,7 @@ all_items_verified() {
   for dir in "$items_dir"/*/; do
     [ -d "$dir" ] || continue
     item="$(basename "$dir")"
-    verify_item "$item" || status=1
+    verify_item "$item" rewritten || status=1
   done
   return $status
 }

@@ -139,6 +139,8 @@ local_item complete l1 "tests pass" >/dev/null
 mkdir -p "$local_marker/reports"
 printf '# review\n' >"$local_marker/reports/review.md"
 local_item review l1 PASS --commit "$local_commit" --report "$local_marker/reports/review.md" >/dev/null
+git -C "$local_worktree" commit -q --amend -m "local change, restacked"
+local_commit="$(git -C "$local_worktree" rev-parse HEAD)"
 local_item final-start >/dev/null
 local_item final-review PASS --commit "$local_commit" --report "$local_marker/reports/review.md" >/dev/null
 local_item approve >/dev/null
