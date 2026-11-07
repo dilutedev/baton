@@ -553,8 +553,8 @@ rule_files() {
   local pattern='(^|/)(CLAUDE|CLAUDE\.local|AGENTS|CONTRIBUTING)\.md$|^\.claude/rules/|^\.cursor/rules/.*\.(mdc|md)$|^\.cursorrules$|^\.github/copilot-instructions\.md$'
   {
     { git -C "$work_dir" ls-files 2>/dev/null | grep -E "$pattern" || true; } | awk -v root="$work_dir" '{ print root "/" $0 }'
-    comm -13 <(git -C "$dir" ls-files 2>/dev/null | sort) \
-      <(cd "$dir" && { find . \( -name .git -o -name node_modules -o -name .baton \) -prune -o -type f -print | sed 's|^\./||' | grep -E "$pattern" || true; } | sort) |
+    LC_ALL=C comm -13 <(git -C "$dir" ls-files 2>/dev/null | LC_ALL=C sort) \
+      <(cd "$dir" && { find . \( -name .git -o -name node_modules -o -name .baton \) -prune -o -type f -print | sed 's|^\./||' | grep -E "$pattern" || true; } | LC_ALL=C sort) |
       awk -v root="$dir" '{ print root "/" $0 }'
   } | sort -u
 }
