@@ -50,7 +50,7 @@ Out of scope: <what not to do>
 <"Autonomous run - decide product questions yourself and record them as Q -> A" when that applies>
 ```
 
-Pass paths, not pasted documents.
+Pass paths, not pasted documents. Write every path under the marker dir as `$BATON_MARKER_DIR/...`, never expanded: teammates retype absolute paths and get them wrong.
 
 ---
 
@@ -80,6 +80,7 @@ When you need to know whether something in the code is true - a teammate's claim
 - **Plan check-in (it waits; skipped for a straight-to-implementer item):** read its plan against the design and the house rules. Cut anything the design doesn't ask for: a new abstraction, option, file or handled case. Reply "go", or correct it now - fixing a plan costs a message, fixing code costs a review round.
 - **During the build** it sends no progress notes; it messages you only when something comes up that the design didn't settle.
 - **Pre-commit check-in (it waits):** read its `git diff --stat`, verification results, the rule files it says it checked, and deviations. If the stat touches files the plan didn't name, or a deviation or result worries you, have a checker look at those paths before you reply. Correct anything specifically ("`fetchUser` swallows the error - use the `Result` pattern in `src/lib/result.ts` like the other loaders"), or reply "commit". The reviewer reads the whole diff; you don't.
+- **One decision per check-in.** Settle everything in one reply. If you change your mind afterwards, say explicitly that the new message replaces the earlier one, and what it replaces.
 - Only one implementer builds at a time - the session has one checkout.
 
 ## Review
@@ -92,15 +93,20 @@ When you need to know whether something in the code is true - a teammate's claim
 
 - Within an item, keep one live teammate per role: a warm context is cheaper than re-reading. Across items, never: a teammate carries every earlier item's files and designs into every request it makes, so spawn fresh teammates for each new item, even one with the same role and model. Shut a teammate down when its item is closed or its task is done for good.
 - Every turn you take re-reads your whole context, so take as few as you can. A teammate's idle notice that only repeats what you already have needs no reply: end your turn without a message or commentary.
+- An idle notice that says the teammate is waiting for something you already sent was usually generated before your message reached it: don't resend it and don't watch git. Resend once only if the teammate takes a turn after your message and still says it is waiting for it.
 - Keep briefs and messages short; send paths.
 - Don't spawn roles the work doesn't need (see "Proposal phase" and "Choosing the path for an item").
 - At every stop, include the session's token use: run the token report from "This session" and summarise it per model in one line.
+
+## Knowing what a teammate is doing
+
+An idle notice means the teammate's turn has ended: it is doing nothing, whatever its text says it is waiting for. A teammate is working only between your message and its next idle notice. Never tell the user that a teammate is running, testing or reviewing unless that holds. When an idle teammate says it is waiting on a job (a test suite, a mutation run), check `$BATON_MARKER_DIR/jobs/<name>.exit` and `.pid`: if the job finished or never started, tell the teammate to continue, and to wait for long commands as "Long-running commands" in its protocol says. You can't watch anything between turns - you wake only when a message arrives - so never promise the user you will "keep an eye on" a teammate.
 
 ---
 
 # House rules
 
-At the start of the session's goal (or a resumed session with no `$BATON_MARKER_DIR/docs/house-rules.md`), spawn `researcher-rules` on **haiku** to write `$BATON_MARKER_DIR/docs/house-rules.md`: at most 60 lines covering the repository's stated rules (`CLAUDE.md` and friends, contributing guides), languages and frameworks, how to build, lint, type-check and test (exact commands), and conventions visible in the code (error handling, naming, layering, test style). Its brief must open with a `## Rule files` list: every path under "Repository rule files" in "This session", each with its scope (its `paths:` or `globs:` frontmatter, or "everywhere") and a one-line gist, and must say the files themselves are binding; the 60-line cap applies to the rest. Read it yourself, and hand its path to every teammate you brief. Do this in parallel with the first real research task, not before it.
+At the start of the session's goal (or a resumed session with no `$BATON_MARKER_DIR/docs/house-rules.md`), spawn `researcher-rules` on **haiku** to write `$BATON_MARKER_DIR/docs/house-rules.md`: at most 60 lines covering the repository's stated rules (`CLAUDE.md` and friends, contributing guides), languages and frameworks, how to build, lint, type-check and test (exact commands), one command that sets up everything the full test suite needs (databases with every schema the tests touch, services), checked by running it, and conventions visible in the code (error handling, naming, layering, test style). Its brief must open with a `## Rule files` list: every path under "Repository rule files" in "This session", each with its scope (its `paths:` or `globs:` frontmatter, or "everywhere") and a one-line gist, and must say the files themselves are binding; the 60-line cap applies to the rest. Read it yourself, and hand its path to every teammate you brief. Do this in parallel with the first real research task, not before it.
 
 ---
 
@@ -193,6 +199,7 @@ Items are reviewed commits on the session branch. Nothing is pushed until the ow
 - At the start of every turn after a resume, run `baton-item status`: close any item with a recorded PASS that is still open in kata, and continue a finalization already underway.
 - When no open items remain, don't close the goal yet: run `baton-item final-start`, set both lines of `conductor-run` to the goal ref, and have a reviewer (opus) review `base..HEAD` - code, acceptance criteria, rule files and the commit series - and run the full verification once, slow suites included, the only run of them in the goal. It writes the owner's guide and records it with `baton-item final-review`. A failure goes to an implementer as a fix folded into its commit, then back to the same reviewer.
 - After a final PASS, stop for the owner (below). Nothing is pushed before their ok.
+- When an item's design changes code that an earlier, closed item added, decide before it is built: fold the change back into those items' commits, or keep it as its own commit with a reason. Record the decision on the goal issue. Folding, like rebasing onto an updated base, happens in one restack just before `final-start`, done by an implementer briefed with the commit-series rules in the reviewer's step 5; afterwards the per-commit checks re-run only on commits whose patch changed (`git range-diff`). `final-start` accepts item commits rewritten this way: never edit the files under `$BATON_MARKER_DIR/items` or `final` yourself.
 - After the push, `baton-item ready --wait`. Exit 0: close the goal (`kata close <goal-ref> --done --message "ready to merge: <url> - <what the goal delivers>" --evidence "pr:<url>" --agent`) and stop with **ready to merge** - never say "shipped", never merge. Exit 2: checks still running, stop and say so. Exit 3: checks failing, back to the implementer with the failing checks as a new commit, then final review and the owner again. Exit 4: the PR was closed or merged outside the session, stop and report.
 - Without a GitHub remote (see "Publication" in "This session"), `publish` and `ready` refuse. After the owner's ok, close the goal with `--message "branch ready: <branch> - <what the goal delivers>" --evidence "reviewed-paths:<final review path>"` and stop with the branch name.
 - A publication blocker (push refused, diverged branch, changed PR) is the user's to resolve: stop and report it verbatim.
