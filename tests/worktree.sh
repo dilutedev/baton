@@ -85,6 +85,15 @@ if "$baton" start --yes "$local_repo" >"$test_root/no-default-output" 2>&1; then
 fi
 grep -q -- "--base" "$test_root/no-default-output"
 
+empty_repo="$test_root/empty"
+git init -q -b main "$empty_repo"
+if "$baton" start --yes --base main "$empty_repo" >"$test_root/empty-output" 2>&1; then
+  echo "a branch without commits has nothing to start a session from"
+  exit 1
+fi
+grep -q "'main' has no commits yet" "$test_root/empty-output"
+[ ! -e "$empty_repo/.baton/s" ]
+
 for workflow_flag in "--workflow worktree" "-w feature" "--workflow=feature"; do
   if "$baton" start --yes $workflow_flag --base main "$local_repo" >"$test_root/workflow-output" 2>&1; then
     echo "$workflow_flag should have been rejected"

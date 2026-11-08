@@ -236,6 +236,9 @@ resolve_base() {
       return 1
       ;;
     esac
+  elif [ "$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null)" = "$requested" ]; then
+    echo "baton: '$requested' has no commits yet, so there is nothing to start a session from - make a first commit (for example: git commit --allow-empty -m 'Initial commit') and rerun" >&2
+    return 1
   else
     echo "baton: base '$requested' is not a branch - use a local branch name or <remote>/<branch> (tags and commits can't be PR targets)" >&2
     return 1
