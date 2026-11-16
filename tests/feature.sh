@@ -224,6 +224,12 @@ second_commit="$(git -C "$worktree" rev-parse HEAD)"
 [ ! -e "$marker/items/i1/verdict" ]
 refuses item verify i1
 
+printf '# review\n' >"$marker/reports/plain-review.md"
+printf '# review\n\n## Session rules\n- persona-review ran\n' >"$marker/reports/review.md"
+printf 'run persona-review in every review\n' >"$project/.baton/rules.md"
+refuses env ROLE=reviewer BATON_MARKER_DIR="$marker" BATON_ROLE=reviewer bash "$repository_dir/bin/baton-item" review i1 PASS --commit "$second_commit" --report "$marker/reports/plain-review.md"
+grep -q "has no '## Session rules' section" "$output"
+ROLE=reviewer item review i1 CHANGES --commit "$second_commit" --report "$marker/reports/plain-review.md" --summary "changes need no rules section" >/dev/null
 ROLE=reviewer item review i1 PASS --commit "$second_commit" --report "$marker/reports/review.md" --summary "looks right" >/dev/null
 item verify i1 >/dev/null
 
@@ -288,6 +294,8 @@ printf 'stray\n' >"$worktree/stray.txt"
 refuses env BATON_MARKER_DIR="$marker" BATON_ROLE=reviewer bash "$repository_dir/bin/baton-item" final-review PASS --commit "$third_commit" --report "$marker/reports/review.md"
 grep -q "uncommitted" "$output"
 rm "$worktree/stray.txt"
+refuses env BATON_MARKER_DIR="$marker" BATON_ROLE=reviewer bash "$repository_dir/bin/baton-item" final-review PASS --commit "$third_commit" --report "$marker/reports/plain-review.md"
+grep -q "has no '## Session rules' section" "$output"
 : >"$gh_state/calls"
 ROLE=reviewer item final-review PASS --commit "$third_commit" --report "$marker/reports/review.md" --summary "goal is complete" >/dev/null
 grep -q "final review: PASS" "$KATA_LOG"

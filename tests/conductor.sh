@@ -200,6 +200,22 @@ grep -qF "  - \`$rules_repo/CLAUDE.local.md\`" "$test_root/rules-block"
 ! grep -qF "node_modules" "$test_root/rules-block"
 [ "$(grep -c '^  - ' "$test_root/rules-block")" = 4 ]
 
+! grep -q "Session rules from the owner" "$rules_marker/conductor.prompt.md"
+
+session_rules_repo="$test_root/session-rules-repo"
+git init -q -b main "$session_rules_repo"
+git -C "$session_rules_repo" config user.email test@example.com
+git -C "$session_rules_repo" config user.name test
+printf 'x\n' >"$session_rules_repo/f"
+git -C "$session_rules_repo" add f
+git -C "$session_rules_repo" commit -q -m init
+mkdir -p "$session_rules_repo/.baton"
+printf 'every review must run the persona-review skill\n' >"$session_rules_repo/.baton/rules.md"
+"$baton" start --base main "$session_rules_repo" >/dev/null 2>&1
+session_rules_marker="$(ls -dt "$session_rules_repo"/.baton/s/*/ | head -n 1)"
+grep -qx "## Session rules from the owner" "${session_rules_marker%/}/conductor.prompt.md"
+grep -qx "every review must run the persona-review skill" "${session_rules_marker%/}/conductor.prompt.md"
+
 bare_repo="$test_root/bare-repo"
 git init -q -b main "$bare_repo"
 git -C "$bare_repo" config user.email test@example.com
@@ -210,6 +226,7 @@ git -C "$bare_repo" commit -q -m init
 "$baton" start --base main "$bare_repo" >/dev/null 2>&1
 bare_marker="$(ls -dt "$bare_repo"/.baton/s/*/ | head -n 1)"
 grep -qx "  none found" "$bare_marker/conductor.prompt.md"
+! grep -q "Session rules from the owner" "$bare_marker/conductor.prompt.md"
 
 printf 'conductor checks passed\n'
 

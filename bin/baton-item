@@ -295,6 +295,12 @@ review_arguments() {
   done
   [ -n "$commit" ] && [ -n "$report" ] || fail "--commit and --report are required"
   report_exists "$report" || fail "report '$report' does not exist"
+  if [ "$verdict_word" = PASS ] && [ -s "$project_root/.baton/rules.md" ]; then
+    local report_file="$report"
+    [ -f "$report_file" ] || report_file="$project_root/$report"
+    [ -f "$report_file" ] || report_file="$worktree/$report"
+    grep -q '^## Session rules' "$report_file" || fail "the report has no '## Session rules' section - $project_root/.baton/rules.md applies to this session"
+  fi
   commit="$(resolve_commit "$commit")"
 }
 

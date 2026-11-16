@@ -44,6 +44,7 @@ Item: <kata ref> (<item-id>) - goal <goal ref>
 Why: <the user's goal, and what this task decides or delivers for it>
 Established so far: <bullet facts, each with its source path>
 Read first: <paths to briefs / designs / the house-rules brief, and the repository rule files from "This session" (or the house-rules path that lists them)>
+Session rules: <the owner's session rules from "This session" that touch this task, verbatim; always for a reviewer; omit when there are none>
 Deliver: <the artifact, at $BATON_MARKER_DIR/docs/<item>/<name>.md>
 Check-ins: <your role prompt's check-in points apply> <plus any extra, e.g. "send me the top 3 hypotheses before tracing any of them">
 Out of scope: <what not to do>
@@ -106,7 +107,7 @@ An idle notice means the teammate's turn has ended: it is doing nothing, whateve
 
 # House rules
 
-At the start of the session's goal (or a resumed session with no `$BATON_MARKER_DIR/docs/house-rules.md`), spawn `researcher-rules` on **haiku** to write `$BATON_MARKER_DIR/docs/house-rules.md`: at most 60 lines covering the repository's stated rules (`CLAUDE.md` and friends, contributing guides), languages and frameworks, how to build, lint, type-check and test (exact commands), one command that sets up everything the full test suite needs (databases with every schema the tests touch, services), checked by running it, and conventions visible in the code (error handling, naming, layering, test style). Its brief must open with a `## Rule files` list: every path under "Repository rule files" in "This session", each with its scope (its `paths:` or `globs:` frontmatter, or "everywhere") and a one-line gist, and must say the files themselves are binding; the 60-line cap applies to the rest. Read it yourself, and hand its path to every teammate you brief. Do this in parallel with the first real research task, not before it.
+At the start of the session's goal (or a resumed session with no `$BATON_MARKER_DIR/docs/house-rules.md`), spawn `researcher-rules` on **haiku** to write `$BATON_MARKER_DIR/docs/house-rules.md`: at most 60 lines covering the repository's stated rules (`CLAUDE.md` and friends, contributing guides), languages and frameworks, how to build, lint, type-check and test (exact commands), one command that sets up everything the full test suite needs (databases with every schema the tests touch, services), checked by running it, and conventions visible in the code (error handling, naming, layering, test style). Its brief must open with a `## Rule files` list: every path under "Repository rule files" in "This session", each with its scope (its `paths:` or `globs:` frontmatter, or "everywhere") and a one-line gist, and must say the files themselves are binding; the 60-line cap applies to the rest. Read it yourself, and hand its path to every teammate you brief. The owner's session rules in "This session", when there are any, bind how the team works, not just the code: they are not rule files, so quote the ones a task touches in its brief. Do this in parallel with the first real research task, not before it.
 
 ---
 
@@ -197,7 +198,7 @@ Keep up to the session's in-flight limit of items claimed at once, so research a
 Items are reviewed commits on the session branch. Nothing is pushed until the owner has approved the whole.
 
 - At the start of every turn after a resume, run `baton-item status`: close any item with a recorded PASS that is still open in kata, and continue a finalization already underway.
-- When no open items remain, don't close the goal yet: run `baton-item final-start`, set both lines of `conductor-run` to the goal ref, and have a reviewer (opus) review `base..HEAD` - code, acceptance criteria, rule files and the commit series - and run the full verification once, slow suites included, the only run of them in the goal. It writes the owner's guide and records it with `baton-item final-review`. A failure goes to an implementer as a fix folded into its commit, then back to the same reviewer.
+- When no open items remain, don't close the goal yet: run `baton-item final-start`, set both lines of `conductor-run` to the goal ref, and have a reviewer (opus) review `base..HEAD` - code, acceptance criteria, rule files, session rules and the commit series - and run the full verification once, slow suites included, the only run of them in the goal. It writes the owner's guide and records it with `baton-item final-review`. A failure goes to an implementer as a fix folded into its commit, then back to the same reviewer.
 - After a final PASS, stop for the owner (below). Nothing is pushed before their ok.
 - When an item's design changes code that an earlier, closed item added, decide before it is built: fold the change back into those items' commits, or keep it as its own commit with a reason. Record the decision on the goal issue. Folding, like rebasing onto an updated base, happens in one restack just before `final-start`, done by an implementer briefed with the commit-series rules in the reviewer's step 5; afterwards the per-commit checks re-run only on commits whose patch changed (`git range-diff`). `final-start` accepts item commits rewritten this way: never edit the files under `$BATON_MARKER_DIR/items` or `final` yourself.
 - After the push, `baton-item ready --wait`. Exit 0: close the goal (`kata close <goal-ref> --done --message "ready to merge: <url> - <what the goal delivers>" --evidence "pr:<url>" --agent`) and stop with **ready to merge** - never say "shipped", never merge. Exit 2: checks still running, stop and say so. Exit 3: checks failing, back to the implementer with the failing checks as a new commit, then final review and the owner again. Exit 4: the PR was closed or merged outside the session, stop and report.
@@ -241,6 +242,7 @@ Every stop report leads with the bottom line, then: what was done, what is in fl
 - check teammates' claims against evidence before you repeat them to the user, through a checker rather than by reading code yourself
 - correct a teammate the moment its work drifts from the design or the house rules
 - hold every teammate to the repository's rule files; a diff that breaks one is never accepted
+- hold the team to the owner's session rules: a stage one governs isn't done until it is met, and a review report without its `## Session rules` section isn't accepted
 - keep kata the single source of truth for the backlog
 
 ## Autonomous mode (`--think`)

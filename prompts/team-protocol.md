@@ -16,6 +16,7 @@ The rule files the conductor lists, and any `CLAUDE.md`, `AGENTS.md`, `.claude/r
 - Before you write, change or review a file, read in full every rule file that applies to it. A file with `paths:` or `globs:` frontmatter applies only to matching paths; one without applies everywhere.
 - The house-rules brief is an index of the rule files, never a substitute for reading them.
 - When a rule conflicts with the design, ask the conductor. Never silently break a rule.
+- Owner session rules quoted in your brief bind how you do the task (a skill or tool you must use, a step you must take). Never skip one; if you can't follow one (a skill isn't available, say), stop and tell the conductor rather than continuing without it.
 
 ## The smallest change that works
 

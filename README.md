@@ -133,6 +133,13 @@ ones such as `CLAUDE.local.md`), lists them to the conductor, and makes them
 binding: teammates read the ones that apply in full, and the reviewer checks
 the diff against them.
 
+Instructions about how sessions in a project must work, rather than code rules
+you would commit, go in `.baton/rules.md` in the project. Baton puts the text
+into the conductor's prompt, the conductor quotes the relevant rules in
+teammates' briefs, and every review report must have a `## Session rules`
+section or `baton-item` refuses its PASS. For example, a rule requiring the
+persona-review skill in every review.
+
 ### It watches the cost
 
 Every conductor turn re-reads its whole context at Opus prices, so the
