@@ -335,8 +335,8 @@ grep -q "not a valid branch name" "$output"
 [ "$(cat "$marker/session_branch")" = "$session_branch" ]
 [ ! -e "$gh_state/creates" ]
 ROLE=implementer item publish --branch feat/add-widgets --title "Add widgets" --body "Adds widgets" >/dev/null
-! git -C "$project" rev-parse --verify -q "refs/heads/$session_branch" >/dev/null
-! git -C "$remote_repo" rev-parse --verify -q "refs/heads/$session_branch" >/dev/null
+! git -C "$project" rev-parse --verify -q "refs/heads/$session_branch" >/dev/null || exit 1
+! git -C "$remote_repo" rev-parse --verify -q "refs/heads/$session_branch" >/dev/null || exit 1
 session_branch=feat/add-widgets
 [ "$(cat "$marker/session_branch")" = "$session_branch" ]
 [ "$(git -C "$worktree" rev-parse --abbrev-ref HEAD)" = "$session_branch" ]

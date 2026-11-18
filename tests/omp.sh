@@ -86,8 +86,8 @@ grep -qx -- "--config" "$OMP_ARGS"
 grep -qx "$marker/omp.yml" "$OMP_ARGS"
 grep -qx -- "--append-system-prompt" "$OMP_ARGS"
 grep -qx "$marker/conductor.prompt.md" "$OMP_ARGS"
-! grep -q -- "--teammate-mode" "$OMP_ARGS"
-! grep -q -- "--permission-mode" "$OMP_ARGS"
+! grep -q -- "--teammate-mode" "$OMP_ARGS" || exit 1
+! grep -q -- "--permission-mode" "$OMP_ARGS" || exit 1
 [ "$(tail -n 1 "$OMP_ARGS")" = "Fix the login timeout" ]
 [ ! -e "$HOME/.claude" ]
 
@@ -96,7 +96,7 @@ grep -q 'perCallModel: "on"' "$marker/omp.yml"
 grep -q "agentIdleTtlMs: 86400000" "$marker/omp.yml"
 grep -qx "    - kimi-developer/kimi-k2.6" "$marker/omp.yml"
 grep -qx "    - kimi-developer/kimi-k2.7-code" "$marker/omp.yml"
-! grep -q "kimi-k3" "$marker/omp.yml"
+! grep -q "kimi-k3" "$marker/omp.yml" || exit 1
 
 # Each agent file lists the role's default model first, then the other tiers.
 python3 - "$BATON_OMP_AGENTS_DIR" <<'EOF2'
@@ -177,7 +177,7 @@ rm "$repo/.baton/alias"
 [ "$(cat "$marker/backend")" = claude ]
 grep -qx -- "--teammate-mode" "$CLAUDE_ARGS"
 grep -qx -- "--append-system-prompt-file" "$CLAUDE_ARGS"
-! grep -q "kimi-developer" "$marker/conductor.prompt.md"
+! grep -q "kimi-developer" "$marker/conductor.prompt.md" || exit 1
 printf 'backend=omp\n' >"$BATON_CONF"
 : >"$CLAUDE_ARGS"
 "$baton" resume "$session" "$repo" >/dev/null
@@ -243,18 +243,18 @@ case "$create_line" in
 *"--env BATON_MARKER_DIR=$herdr_marker"*) ;;
 *) echo "the herdr workspace is wrong: $create_line"; exit 1 ;;
 esac
-! grep -q "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" <<<"$create_line"
+! grep -q "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS" <<<"$create_line" || exit 1
 start_line="$(grep "^agent start" "$HERDR_LOG")"
 case "$start_line" in
 *"conductor-$(basename "$herdr_marker") --kind omp --pane w1:p1"*"--model kimi-developer/kimi-k3"*"--config $herdr_marker/omp.yml"*) ;;
 *) echo "the conductor wasn't started as an omp agent: $start_line"; exit 1 ;;
 esac
-! grep -q -- "--teammate-mode" <<<"$start_line"
+! grep -q -- "--teammate-mode" <<<"$start_line" || exit 1
 "$baton" stop "$(basename "$herdr_marker")" "$repo" >/dev/null
 
 rm -f "$HERDR_LOG.closed"; : >"$HERDR_LOG"
 HERDR_START_TIMEOUT=1 env -u HERDR_ENV "$baton" start --backend omp --base main "$repo" >/dev/null 2>&1
-! grep -q "^workspace close" "$HERDR_LOG"
+! grep -q "^workspace close" "$HERDR_LOG" || exit 1
 rm -f "$HERDR_LOG.closed"; : >"$HERDR_LOG"
 if HERDR_START_TIMEOUT=1 HERDR_FOREGROUND=claude env -u HERDR_ENV "$baton" start --backend omp --base main "$repo" >/dev/null 2>&1; then
   echo "start succeeded although omp never ran"

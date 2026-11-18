@@ -57,7 +57,7 @@ grep -q "permission-mode  acceptEdits" "$test_root/config-output"
 printf 'researcher.model=opus\nlayout=tiled\n' >>"$BATON_CONF"
 "$baton" config "$repo" 2>"$test_root/config-warnings" >/dev/null
 grep -qF "baton: ignoring unknown settings in $BATON_CONF: researcher.model layout" "$test_root/config-warnings"
-! grep -q "$repo/.baton/config" "$test_root/config-warnings"
+! grep -q "$repo/.baton/config" "$test_root/config-warnings" || exit 1
 
 "$baton" start --base main --goal "Fix the login timeout" "$repo" >/dev/null 2>&1
 marker="$(ls -d "$repo"/.baton/s/*/)"
@@ -154,7 +154,7 @@ rm -f "$HERDR_LOG.closed"; : >"$HERDR_LOG"
 HERDR_START_TIMEOUT=1 env -u HERDR_ENV "$baton" start --base main "$repo" >/dev/null 2>&1
 slow_marker="$(ls -dt "$repo"/.baton/s/*/ | head -n 1)"
 slow_marker="${slow_marker%/}"
-! grep -q "^workspace close" "$HERDR_LOG"
+! grep -q "^workspace close" "$HERDR_LOG" || exit 1
 [ "$(cat "$slow_marker/tab_id")" = w1:t1 ]
 "$baton" status "$repo" >"$test_root/status-output"
 grep -q "^$(basename "$slow_marker")  running" "$test_root/status-output"
@@ -196,12 +196,12 @@ grep -qF "  - \`$rules_worktree/AGENTS.md\`" "$test_root/rules-block"
 grep -qF "  - \`$rules_worktree/src/CLAUDE.md\`" "$test_root/rules-block"
 grep -qF "  - \`$rules_worktree/.claude/rules/01-comments.md\`" "$test_root/rules-block"
 grep -qF "  - \`$rules_repo/CLAUDE.local.md\`" "$test_root/rules-block"
-! grep -qF "README.md" "$test_root/rules-block"
-! grep -qF "main.rs" "$test_root/rules-block"
-! grep -qF "node_modules" "$test_root/rules-block"
+! grep -qF "README.md" "$test_root/rules-block" || exit 1
+! grep -qF "main.rs" "$test_root/rules-block" || exit 1
+! grep -qF "node_modules" "$test_root/rules-block" || exit 1
 [ "$(grep -c '^  - ' "$test_root/rules-block")" = 4 ]
 
-! grep -q "Session rules from the owner" "$rules_marker/conductor.prompt.md"
+! grep -q "Session rules from the owner" "$rules_marker/conductor.prompt.md" || exit 1
 
 session_rules_repo="$test_root/session-rules-repo"
 git init -q -b main "$session_rules_repo"
@@ -239,8 +239,7 @@ git -C "$bare_repo" commit -q -m init
 "$baton" start --base main "$bare_repo" >/dev/null 2>&1
 bare_marker="$(ls -dt "$bare_repo"/.baton/s/*/ | head -n 1)"
 grep -qx "  none found" "$bare_marker/conductor.prompt.md"
-! grep -q "Session rules from the owner" "$bare_marker/conductor.prompt.md"
-[ "$(grep -c '^## Session rules from the owner' "$bare_marker/conductor.prompt.md")" = 0 ]
+! grep -q "Session rules from the owner" "$bare_marker/conductor.prompt.md" || exit 1
 
 printf 'keep commits small\n' >"$BATON_RULES"
 "$baton" start --base main "$bare_repo" >/dev/null 2>&1

@@ -211,7 +211,7 @@ printf 'review\n' >"$second_marker/final/phase"
 : >"$CLAUDE_LOG"
 "$baton" resume "$second_session" "$local_repo" >/dev/null
 grep -q "^args:.*Its goal issue is goal1. The goal is in finalization" "$CLAUDE_LOG"
-! grep -q "item last in flight" "$CLAUDE_LOG"
+! grep -q "item last in flight" "$CLAUDE_LOG" || exit 1
 rm -r "$second_marker/final" "$second_marker/slug" "$second_marker/conductor-run"
 
 remote_repo="$test_root/remote.git"
@@ -298,7 +298,7 @@ private_kata_repo="$test_root/private-kata"
 make_repository "$private_kata_repo"
 printf 'project = "mine"\n' >"$private_kata_repo/.kata.toml"
 "$baton" start --yes --base main "$private_kata_repo" >"$test_root/private-kata-output" 2>&1
-! grep -q "warning" "$test_root/private-kata-output"
+! grep -q "warning" "$test_root/private-kata-output" || exit 1
 grep -qx '\.kata\.toml' "$private_kata_repo/.git/info/exclude"
 [ -z "$(git -C "$private_kata_repo" status --porcelain)" ]
 private_kata_worktree="$(cat "$private_kata_repo/.baton/s/$(only_session "$private_kata_repo")/worktree")"
