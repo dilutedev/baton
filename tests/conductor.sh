@@ -23,6 +23,7 @@ export HERDR_ENV=1
 export CLAUDE_ARGS="$test_root/claude-args"
 export BATON_WORKTREE_DIR="$test_root/worktrees"
 export BATON_CONF="$test_root/baton.conf"
+export BATON_RULES="$test_root/rules.md"
 export HOME="$test_root/home"
 mkdir -p "$HOME/.claude"
 baton="$repository_dir/bin/baton"
@@ -215,6 +216,18 @@ printf 'every review must run the persona-review skill\n' >"$session_rules_repo/
 session_rules_marker="$(ls -dt "$session_rules_repo"/.baton/s/*/ | head -n 1)"
 grep -qx "## Session rules from the owner" "${session_rules_marker%/}/conductor.prompt.md"
 grep -qx "every review must run the persona-review skill" "${session_rules_marker%/}/conductor.prompt.md"
+grep -qx "### For this project" "${session_rules_marker%/}/conductor.prompt.md"
+[ "$(grep -c '^### For every project' "${session_rules_marker%/}/conductor.prompt.md")" = 0 ]
+
+printf 'keep commits small\n' >"$BATON_RULES"
+"$baton" start --base main "$session_rules_repo" >/dev/null 2>&1
+both_rules_prompt="$(ls -dt "$session_rules_repo"/.baton/s/*/ | head -n 1)conductor.prompt.md"
+grep -qx "### For every project" "$both_rules_prompt"
+grep -qF "From \`$BATON_RULES\`." "$both_rules_prompt"
+grep -qx "keep commits small" "$both_rules_prompt"
+grep -qx "every review must run the persona-review skill" "$both_rules_prompt"
+[ "$(grep -n '^### For every project' "$both_rules_prompt" | cut -d: -f1)" -lt "$(grep -n '^### For this project' "$both_rules_prompt" | cut -d: -f1)" ]
+rm "$BATON_RULES"
 
 bare_repo="$test_root/bare-repo"
 git init -q -b main "$bare_repo"
@@ -227,6 +240,15 @@ git -C "$bare_repo" commit -q -m init
 bare_marker="$(ls -dt "$bare_repo"/.baton/s/*/ | head -n 1)"
 grep -qx "  none found" "$bare_marker/conductor.prompt.md"
 ! grep -q "Session rules from the owner" "$bare_marker/conductor.prompt.md"
+[ "$(grep -c '^## Session rules from the owner' "$bare_marker/conductor.prompt.md")" = 0 ]
+
+printf 'keep commits small\n' >"$BATON_RULES"
+"$baton" start --base main "$bare_repo" >/dev/null 2>&1
+global_rules_prompt="$(ls -dt "$bare_repo"/.baton/s/*/ | head -n 1)conductor.prompt.md"
+grep -qx "## Session rules from the owner" "$global_rules_prompt"
+grep -qx "keep commits small" "$global_rules_prompt"
+[ "$(grep -c '^### For this project' "$global_rules_prompt")" = 0 ]
+rm "$BATON_RULES"
 
 printf 'conductor checks passed\n'
 

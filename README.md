@@ -140,6 +140,10 @@ teammates' briefs, and every review report must have a `## Session rules`
 section or `baton-item` refuses its PASS. For example, a rule requiring the
 persona-review skill in every review.
 
+Rules for every project go in `rules.md` in baton's own directory, next to
+`baton.conf` (git-ignored like it; `BATON_RULES` points elsewhere). Both files
+apply when both exist, and a project rule wins where the two conflict.
+
 ### It watches the cost
 
 Every conductor turn re-reads its whole context at Opus prices, so the
@@ -564,6 +568,7 @@ the conductor stops after that many items.
 | `BATON_MARKER_DIR` | `baton` | The session's `.baton/s/<id>/` dir |
 | `BATON_PROMPT_DIR` | you (optional) | Where the `.prompt.md` files live |
 | `BATON_CONF` | you (optional) | The global `baton.conf` path |
+| `BATON_RULES` | you (optional) | The session rules for every project (default `rules.md` next to `baton.conf`) |
 | `BATON_AGENTS_DIR` | you (optional) | Where agent definitions are written (default `~/.claude/agents`) |
 | `BATON_CLAUDE` | you (optional) | The Claude Code command (default `claude`) |
 | `BATON_OMP` | you (optional) | The omp command (default `omp`) |

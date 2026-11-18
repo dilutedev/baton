@@ -4,6 +4,7 @@ set -euo pipefail
 repository_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 test_root="$(mktemp -d)"
 export BATON_CONF="$test_root/baton.conf"
+export BATON_RULES="$test_root/rules.md"
 stub_dir="$test_root/stubs"
 gh_state="$test_root/gh"
 mkdir -p "$stub_dir" "$gh_state"
@@ -226,6 +227,10 @@ refuses item verify i1
 
 printf '# review\n' >"$marker/reports/plain-review.md"
 printf '# review\n\n## Session rules\n- persona-review ran\n' >"$marker/reports/review.md"
+printf 'run persona-review in every review\n' >"$BATON_RULES"
+refuses env ROLE=reviewer BATON_MARKER_DIR="$marker" BATON_ROLE=reviewer bash "$repository_dir/bin/baton-item" review i1 PASS --commit "$second_commit" --report "$marker/reports/plain-review.md"
+grep -qF "has no '## Session rules' section - $BATON_RULES applies" "$output"
+rm "$BATON_RULES"
 printf 'run persona-review in every review\n' >"$project/.baton/rules.md"
 refuses env ROLE=reviewer BATON_MARKER_DIR="$marker" BATON_ROLE=reviewer bash "$repository_dir/bin/baton-item" review i1 PASS --commit "$second_commit" --report "$marker/reports/plain-review.md"
 grep -q "has no '## Session rules' section" "$output"

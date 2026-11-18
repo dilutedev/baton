@@ -27,6 +27,7 @@ ROOT_DIR="$(cd "$BIN_DIR/.." && pwd)"
 ROLES=(researcher planner principal implementer reviewer)
 PROMPT_DIR="${BATON_PROMPT_DIR:-$ROOT_DIR/prompts}"
 GLOBAL_CONF="${BATON_CONF:-$ROOT_DIR/baton.conf}"
+GLOBAL_RULES="${BATON_RULES:-$ROOT_DIR/rules.md}"
 AGENTS_DIR="${BATON_AGENTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents}"
 CLAUDE_BIN="${BATON_CLAUDE:-claude}"
 OMP_BIN="${BATON_OMP:-omp}"
@@ -605,15 +606,21 @@ $rules
 - Item cap for this run: ${BATON_MAX_ITEMS:-none}
 - Autonomous mode (\`--think\`): $think
 EOF
-    if [ -s "$dir/.baton/rules.md" ]; then
+    if [ -s "$GLOBAL_RULES" ] || [ -s "$dir/.baton/rules.md" ]; then
       cat <<EOF
 
 ## Session rules from the owner
 
-From \`$dir/.baton/rules.md\`. Binding on the whole process, not just the code: every teammate whose work a rule touches gets it in their brief, a stage a rule governs isn't done until the rule is met, and every review report (item and final) has a \`## Session rules\` section.
-
+Binding on the whole process, not just the code: every teammate whose work a rule touches gets it in their brief, a stage a rule governs isn't done until the rule is met, and every review report (item and final) has a \`## Session rules\` section. Where a project rule conflicts with a rule for every project, the project rule wins.
 EOF
-      cat "$dir/.baton/rules.md"
+      if [ -s "$GLOBAL_RULES" ]; then
+        printf '\n### For every project\n\nFrom `%s`.\n\n' "$GLOBAL_RULES"
+        cat "$GLOBAL_RULES"
+      fi
+      if [ -s "$dir/.baton/rules.md" ]; then
+        printf '\n### For this project\n\nFrom `%s`.\n\n' "$dir/.baton/rules.md"
+        cat "$dir/.baton/rules.md"
+      fi
     fi
     [ "$backend" != omp ] || { printf '\n---\n\n'; cat "$PROMPT_DIR/omp.conductor.md"; }
   } >"$file"
