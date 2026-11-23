@@ -41,3 +41,11 @@ teammate-mode=in-process
 # Code with CLAUDE_CONFIG_DIR set to PATH. The alias is saved per directory;
 # without one, sessions run on plain claude. Not allowed with --backend omp.
 # alias.claude2=~/.claude-secondary
+#
+# An alias can also send Claude Code to another Anthropic-compatible API,
+# such as z.ai, with the token read from the environment variable token-env
+# names. Map the tier names to that provider's models in the config dir's
+# settings.json (ANTHROPIC_DEFAULT_OPUS_MODEL and friends) - see README.
+# alias.zai=~/.zai
+# alias.zai.base-url=https://api.z.ai/api/anthropic
+# alias.zai.token-env=ZAI_API_KEY

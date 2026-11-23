@@ -10,6 +10,7 @@ mkdir -p "$stub_dir"
 cat >"$stub_dir/claude" <<'EOF'
 #!/usr/bin/env bash
 printf 'config=%s\n' "${CLAUDE_CONFIG_DIR:-}" >>"$CLAUDE_LOG"
+printf 'api=%s token=%s\n' "${ANTHROPIC_BASE_URL:-}" "${ANTHROPIC_AUTH_TOKEN:-}" >>"$CLAUDE_API_LOG"
 EOF
 cat >"$stub_dir/kata" <<'EOF'
 #!/usr/bin/env bash
@@ -21,10 +22,11 @@ chmod +x "$stub_dir/claude" "$stub_dir/kata"
 export PATH="$stub_dir:$PATH"
 export HERDR_ENV=1
 export CLAUDE_LOG="$test_root/claude.log"
+export CLAUDE_API_LOG="$test_root/claude-api.log"
 export BATON_WORKTREE_DIR="$test_root/worktrees"
 export BATON_CONF="$test_root/baton.conf"
 export HOME="$test_root/home"
-unset CLAUDE_CONFIG_DIR BATON_AGENTS_DIR
+unset CLAUDE_CONFIG_DIR BATON_AGENTS_DIR ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN TEST_ZAI_KEY
 mkdir -p "$HOME"
 baton="$repository_dir/bin/baton"
 secondary="$HOME/.claude-secondary"
@@ -37,7 +39,9 @@ printf 'x\n' >"$repo/f"
 git -C "$repo" add f
 git -C "$repo" commit -q -m init
 
-printf 'alias.claude2=~/.claude-secondary\n' >"$BATON_CONF"
+zai_dir="$HOME/.zai"
+printf '%s\n' 'alias.claude2=~/.claude-secondary' 'alias.zai=~/.zai' \
+  'alias.zai.base-url=https://api.z.ai/api/anthropic' 'alias.zai.token-env=TEST_ZAI_KEY' >"$BATON_CONF"
 
 last_config() {
   tail -n1 "$CLAUDE_LOG"
@@ -101,6 +105,30 @@ done
 "$baton" cost "$second_session" "$repo" >"$test_root/cost-output"
 grep -Eq '^claude-opus-5-5 +2 +10 +0 +0 +2 +-$' "$test_root/cost-output"
 
+# An alias with a base-url refuses to launch while its token variable is
+# empty, rather than falling back to the Anthropic API.
+: >"$CLAUDE_LOG"
+if "$baton" resume --alias=zai "$second_session" "$repo" >"$test_root/no-token-output" 2>&1; then
+  echo "an endpoint alias without its token should be refused"
+  exit 1
+fi
+grep -q "TEST_ZAI_KEY" "$test_root/no-token-output"
+[ ! -s "$CLAUDE_LOG" ]
+[ "$(cat "$repo/.baton/alias")" = claude ]
+
+# With the token exported, the conductor runs on the alias's config dir,
+# endpoint and token.
+export TEST_ZAI_KEY=test-token
+"$baton" resume --alias=zai "$second_session" "$repo" >/dev/null
+[ "$(last_config)" = "config=$zai_dir" ]
+[ "$(tail -n1 "$CLAUDE_API_LOG")" = "api=https://api.z.ai/api/anthropic token=test-token" ]
+"$baton" config "$repo" >"$test_root/zai-config-output"
+grep -qF "api endpoint     https://api.z.ai/api/anthropic" "$test_root/zai-config-output"
+
+# Switching to an alias without an endpoint drops it again.
+"$baton" resume --alias=claude2 "$second_session" "$repo" >/dev/null
+[ "$(tail -n1 "$CLAUDE_API_LOG")" = "api= token=" ]
+
 # In a herdr workspace the conductor gets the alias's config dir too.
 cat >"$stub_dir/herdr" <<'EOF'
 #!/usr/bin/env bash
@@ -115,5 +143,16 @@ chmod +x "$stub_dir/herdr"
 export HERDR_LOG="$test_root/herdr.log"
 env -u HERDR_ENV "$baton" resume --alias=claude2 "$second_session" "$repo" >/dev/null 2>&1
 grep "^workspace create" "$HERDR_LOG" | grep -qF -- "--env CLAUDE_CONFIG_DIR=$secondary"
+
+if grep "^workspace create" "$HERDR_LOG" | grep -qF -- "ANTHROPIC_"; then
+  echo "an alias without base-url should not send ANTHROPIC_ env to the pane"
+  exit 1
+fi
+
+# In a herdr workspace the conductor's pane gets the endpoint and token.
+: >"$HERDR_LOG"
+env -u HERDR_ENV "$baton" resume --alias=zai "$first_session" "$repo" >/dev/null 2>&1
+grep "^workspace create" "$HERDR_LOG" | grep -qF -- "--env ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic"
+grep "^workspace create" "$HERDR_LOG" | grep -qF -- "--env ANTHROPIC_AUTH_TOKEN=test-token"
 
 echo "alias tests passed"
