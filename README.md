@@ -440,6 +440,42 @@ to plain `claude`, which is also the default when nothing is saved. Because a
 resume is a fresh conversation, a session can switch accounts between
 resumes, and `baton cost` counts the transcripts of every configured alias.
 
+An alias can also point Claude Code at another Anthropic-compatible API,
+such as z.ai's GLM models:
+
+```
+alias.zai=~/.zai
+alias.zai.base-url=https://api.z.ai/api/anthropic
+alias.zai.token-env=ZAI_API_KEY
+```
+
+The conductor then runs with `ANTHROPIC_BASE_URL` set to `base-url` and
+`ANTHROPIC_AUTH_TOKEN` set to the value of the variable `token-env` names,
+which must be exported wherever you run `baton start`/`resume`; baton refuses
+to launch if it's empty rather than fall back to Anthropic's API. Teammates
+inherit both. baton only ever asks for `haiku`, `sonnet` or `opus`, so map
+those to the provider's models in the alias's `settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-...",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-...",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-..."
+  }
+}
+```
+
+In a herdr workspace the token is passed to the conductor's pane on the
+`herdr workspace create` command line.
+
+`permission-mode=auto` doesn't work against another provider: its safety
+check only runs on Anthropic's API, so Claude Code refuses every command.
+Use `default`, `acceptEdits` or `bypassPermissions` for such an alias. With
+`bypassPermissions`, Claude Code asks once per config dir to accept the mode;
+answer it in a session started from a herdr pane, since a new herdr workspace
+treats the question as a failed startup.
+
 ### The omp backend (`--backend`)
 
 `baton start --backend omp` (or `backend=omp` in `baton.conf`) runs the

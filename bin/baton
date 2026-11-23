@@ -320,16 +320,29 @@ alias_config_dir() {
 # use_alias <dir> [alias] -> points Claude Code, and the agents baton
 # installs, at the alias's config dir: the alias given, which is saved to
 # DIR/.baton/alias, else the one saved there, else claude, which leaves
-# CLAUDE_CONFIG_DIR as it is. Sets ALIAS.
+# CLAUDE_CONFIG_DIR as it is. An alias with alias.<alias>.base-url also
+# points Claude Code at that API endpoint, authenticated with the token in
+# the environment variable alias.<alias>.token-env names. Sets ALIAS and
+# ALIAS_ENV.
 use_alias() {
-  local dir="$1" config_dir
+  local dir="$1" config_dir base_url token_env
   ALIAS="${2:-$(cat "$dir/.baton/alias" 2>/dev/null || echo claude)}"
+  ALIAS_ENV=()
   if [ "$ALIAS" != claude ]; then
     config_dir="$(alias_config_dir "$dir" "$ALIAS")"
     [ -n "$config_dir" ] || {
       echo "baton: unknown alias '$ALIAS' - map it to its Claude Code config dir with alias.$ALIAS=PATH in $GLOBAL_CONF" >&2
       return 1
     }
+    base_url="$(resolve_setting "$dir" "alias.$ALIAS.base-url")"
+    if [ -n "$base_url" ]; then
+      token_env="$(resolve_setting "$dir" "alias.$ALIAS.token-env")"
+      [ -n "$token_env" ] && [ -n "${!token_env:-}" ] || {
+        echo "baton: alias '$ALIAS' sends Claude Code to $base_url but has no token - set alias.$ALIAS.token-env to the environment variable holding it, and export that variable${token_env:+ ($token_env is empty)}" >&2
+        return 1
+      }
+      ALIAS_ENV=("ANTHROPIC_BASE_URL=$base_url" "ANTHROPIC_AUTH_TOKEN=${!token_env}")
+    fi
     export CLAUDE_CONFIG_DIR="$config_dir"
     [ -n "${BATON_AGENTS_DIR:-}" ] || AGENTS_DIR="$CLAUDE_CONFIG_DIR/agents"
   fi
@@ -755,7 +768,7 @@ launch_conductor() {
     [ -z "$permission" ] || CONDUCTOR_ARGS+=(--permission-mode "$permission")
     [ -z "$message" ] || CONDUCTOR_ARGS+=("$message")
     CONDUCTOR_ENV=(CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 "PATH=$BIN_DIR:$PATH"
-      "BATON_ROOT=$work_dir" "BATON_MARKER_DIR=$marker_dir" "CARGO_TARGET_DIR=$marker_dir/cargo-target" ${CLAUDE_CONFIG_DIR:+"CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"})
+      "BATON_ROOT=$work_dir" "BATON_MARKER_DIR=$marker_dir" "CARGO_TARGET_DIR=$marker_dir/cargo-target" ${CLAUDE_CONFIG_DIR:+"CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"} ${ALIAS_ENV[@]+"${ALIAS_ENV[@]}"})
   fi
   rm -f "$marker_dir/pid" "$marker_dir/workspace_id" "$marker_dir/tab_id" "$marker_dir/owns_workspace"
 
@@ -1339,7 +1352,7 @@ cmd_cost() {
   marker_dir="$DIR/.baton/s/$instance"
   work_dir="$(cat "$marker_dir/worktree" 2>/dev/null || echo "$DIR")"
   local config_dirs=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}") alias_name
-  for alias_name in $(grep -hE '^[[:space:]]*alias\.[^=]*=' "$GLOBAL_CONF" "$DIR/.baton/config" 2>/dev/null | sed -E 's/^[[:space:]]*alias\.//; s/[[:space:]]*=.*//' | sort -u); do
+  for alias_name in $(grep -hE '^[[:space:]]*alias\.[^.=]*=' "$GLOBAL_CONF" "$DIR/.baton/config" 2>/dev/null | sed -E 's/^[[:space:]]*alias\.//; s/[[:space:]]*=.*//' | sort -u); do
     config_dirs+=("$(alias_config_dir "$DIR" "$alias_name")")
   done
   python3 - "$work_dir" "${config_dirs[@]}" <<'PYEOF'
@@ -1472,6 +1485,8 @@ cmd_config() {
   backend="$(resolve_backend "$dir" "" || echo invalid)"
   printf 'backend          %s\n' "$backend"
   printf 'alias            %s\n' "$ALIAS${CLAUDE_CONFIG_DIR:+ ($CLAUDE_CONFIG_DIR)}"
+  [ "$ALIAS" = claude ] || [ -z "$(resolve_setting "$dir" "alias.$ALIAS.base-url")" ] ||
+    printf 'api endpoint     %s\n' "$(resolve_setting "$dir" "alias.$ALIAS.base-url")"
   printf 'conductor        model=%s effort=%s\n' "$([ "$backend" = omp ] && omp_model_id "$(resolve_setting "$dir" conductor.model)" || resolve_setting "$dir" conductor.model)" "$(resolve_setting "$dir" conductor.effort)"
   printf 'worker models    %s (the conductor picks one per task)\n' "$(allowed_worker_models "$dir" || echo invalid)"
   for role in "${ROLES[@]}"; do
